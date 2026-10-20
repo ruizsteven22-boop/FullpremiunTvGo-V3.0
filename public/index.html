@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Full Premium TvGo v3.1 — Plataforma OTT Oficial</title>
+  <title>Full Premium TvGo v4.0 — Plataforma OTT Oficial</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -18,12 +18,21 @@
 
     const SERVER_HOST = 'http://st.xn--aejo-gqa.de:80';
 
+    // Convierte subtítulos .SRT a formato WebVTT para que el navegador los muestre en pantalla
+    function srtToVtt(srtText) {
+      const cleaned = srtText
+        .replace(/\r+/g, '')
+        .replace(/^\d+\s*\n/gm, '')
+        .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+      return 'WEBVTT\n\n' + cleaned;
+    }
+
     function App() {
       const [auth, setAuth] = useState(false);
       const [username, setUsername] = useState('MarcoRomero');
       const [password, setPassword] = useState('ZLK1oAddlk');
 
-      const [activeTab, setActiveTab] = useState('LIVE');
+      const [activeTab, setActiveTab] = useState('LIVE'); // 'LIVE' | 'MOVIES' | 'SERIES'
       const [categories, setCategories] = useState({ LIVE: [], MOVIES: [], SERIES: [] });
       const [selectedCategory, setSelectedCategory] = useState('ALL');
 
@@ -52,7 +61,7 @@
         try {
           const baseApi = `${SERVER_HOST}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}`;
 
-          setLoadingStatus('1/4 Descargando categorías...');
+          setLoadingStatus('1/4 Sincronizando grupos y categorías...');
           const [liveCats, vodCats, serCats] = await Promise.all([
             fetchJsonViaProxy(`${baseApi}&action=get_live_categories`).catch(() => []),
             fetchJsonViaProxy(`${baseApi}&action=get_vod_categories`).catch(() => []),
@@ -73,7 +82,7 @@
             SERIES: Array.isArray(serCats) ? serCats : []
           });
 
-          setLoadingStatus('2/4 Descargando canales en vivo...');
+          setLoadingStatus('2/4 Cargando canales de TV en Vivo...');
           const liveData = await fetchJsonViaProxy(`${baseApi}&action=get_live_streams`);
           if (Array.isArray(liveData)) {
             const mappedLive = liveData.map((ch, idx) => {
@@ -93,7 +102,7 @@
             if (mappedLive.length > 0) setActiveItem(mappedLive[0]);
           }
 
-          setLoadingStatus('3/4 Descargando películas...');
+          setLoadingStatus('3/4 Cargando catálogo de Películas...');
           const moviesData = await fetchJsonViaProxy(`${baseApi}&action=get_vod_streams`);
           if (Array.isArray(moviesData)) {
             const mappedMovies = moviesData.map((m, idx) => {
@@ -114,7 +123,7 @@
             setMoviesCatalog(mappedMovies);
           }
 
-          setLoadingStatus('4/4 Descargando series...');
+          setLoadingStatus('4/4 Cargando catálogo de Series...');
           const seriesData = await fetchJsonViaProxy(`${baseApi}&action=get_series`);
           if (Array.isArray(seriesData)) {
             const mappedSeries = seriesData.map((s, idx) => {
@@ -158,8 +167,10 @@
                 epList.push({
                   type: 'EPISODE',
                   id: `ep-${ep.id}`,
+                  streamId: ep.id,
                   title: `${item.title} - T${seasonNum}:E${ep.episode_num} - ${ep.title || 'Capítulo'}`,
                   ext,
+                  subtitles: ep.info?.subtitles || [],
                   categoryName: `Temporada ${seasonNum}`,
                   streamUrl: `${SERVER_HOST}/series/${username}/${password}/${ep.id}.${ext}`
                 });
@@ -220,7 +231,7 @@
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full">v3.1 Stable MSE</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full">v4.0 Multi-Audio & Subtítulos</span>
                 </div>
                 <p className="text-[11px] text-slate-400">app.fullpremiumtvcl.com</p>
               </div>
@@ -235,7 +246,9 @@
             )}
 
             {auth && (
-              <button onClick={() => setAuth(false)} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700">Salir</button>
+              <button onClick={() => setAuth(false)} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700">
+                Salir ({username})
+              </button>
             )}
           </header>
 
@@ -259,7 +272,7 @@
               </div>
             ) : (
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-                <div className="xl:col-span-5 bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-col h-[720px]">
+                <div className="xl:col-span-5 bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-col h-[740px]">
                   <div className="mb-2.5">
                     <select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setVisibleLimit(80); }} className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-violet-500/40 text-xs text-white font-semibold focus:outline-none">
                       <option value="ALL">📂 Todos los Grupos ({currentCatalog.length})</option>
@@ -270,7 +283,7 @@
                   </div>
 
                   <div className="mb-3">
-                    <input type="text" placeholder={`Buscar...`} value={search} onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }} className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" />
+                    <input type="text" placeholder={`Buscar en ${activeTab === 'LIVE' ? 'TV en Vivo' : activeTab === 'MOVIES' ? 'Películas' : 'Series'}...`} value={search} onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }} className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" />
                   </div>
 
                   {activeTab === 'SERIES' && (loadingSeriesInfo || seriesEpisodes.length > 0) && (
@@ -301,7 +314,7 @@
                 </div>
 
                 <div className="xl:col-span-7">
-                  <VideoPlayer item={activeItem} />
+                  <VideoPlayer item={activeItem} username={username} password={password} />
                 </div>
               </div>
             )}
@@ -310,11 +323,56 @@
       );
     }
 
-    function VideoPlayer({ item }) {
+    function VideoPlayer({ item, username, password }) {
       const videoRef = useRef(null);
-      const [status, setStatus] = useState('IDLE');
       const playerRef = useRef(null);
 
+      const [status, setStatus] = useState('IDLE');
+      // Para TV en Vivo: 'MSE' (rápido .ts) | 'FFMPEG_HD' (repara HD/FHD con solo audio o códec HEVC)
+      const [liveEngine, setLiveEngine] = useState('MSE');
+
+      // Para Películas y Series: Detector y Selector de Audio y Subtítulos
+      const [audioTracks, setAudioTracks] = useState([
+        { index: 0, label: 'Pista 1 — Español / Principal (Por defecto)' },
+        { index: 1, label: 'Pista 2 — Inglés / Audio Original (Dual)' },
+        { index: 2, label: 'Pista 3 — Audio Alternativo' }
+      ]);
+      const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
+      const [useServerAudioSwitch, setUseServerAudioSwitch] = useState(false);
+
+      // Subtítulos
+      const [subtitleTracks, setSubtitleTracks] = useState([]);
+      const [activeSubtitle, setActiveSubtitle] = useState('OFF');
+
+      // Al cambiar de canal o película, resetear siempre al estado limpio inicial
+      useEffect(() => {
+        setLiveEngine('MSE');
+        setSelectedAudioTrack(0);
+        setUseServerAudioSwitch(false);
+        setSubtitleTracks([]);
+        setActiveSubtitle('OFF');
+
+        // Si es una Película, consultar metadatos reales de pistas de audio y subtítulos en Xtream
+        if (item?.type === 'MOVIE' && item?.streamId) {
+          const vodInfoUrl = `${SERVER_HOST}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_info&vod_id=${item.streamId}`;
+          fetch(`/proxy?url=${encodeURIComponent(vodInfoUrl)}`)
+            .then(r => r.json())
+            .then(data => {
+              // Extraer subtítulos externos si Xtream los provee
+              const subs = data?.info?.subtitles || [];
+              if (Array.isArray(subs) && subs.length > 0) {
+                setSubtitleTracks(subs.map((s, idx) => ({
+                  id: `sub-${idx}`,
+                  label: s.language || s.name || `Subtítulo ${idx + 1}`,
+                  url: `/proxy?url=${encodeURIComponent(s.url || s.file)}`
+                })));
+              }
+            })
+            .catch(() => {});
+        }
+      }, [item]);
+
+      // Efecto principal de reproducción
       useEffect(() => {
         if (!item?.streamUrl || !videoRef.current) return;
         setStatus('LOADING');
@@ -325,38 +383,67 @@
           playerRef.current = null;
         }
 
-        const playUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
+        const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
 
-        if (item.type === 'LIVE' && window.mpegts && window.mpegts.isSupported()) {
-          try {
-            const player = window.mpegts.createPlayer({
-              type: 'mse',
-              isLive: true,
-              url: playUrl,
-            }, { 
-              enableWorker: true, 
-              lazyLoad: false, 
-              liveBufferLatencyChasing: true,
-              stashInitialSize: 128 * 1024
-            });
+        if (item.type === 'LIVE') {
+          if (liveEngine === 'MSE' && window.mpegts && window.mpegts.isSupported()) {
+            try {
+              const player = window.mpegts.createPlayer({
+                type: 'mse',
+                isLive: true,
+                url: directProxyUrl
+              }, {
+                enableWorker: true,
+                lazyLoad: false,
+                liveBufferLatencyChasing: true,
+                stashInitialSize: 128 * 1024
+              });
 
-            playerRef.current = player;
-            player.attachMediaElement(video);
-            player.load();
-            player.play().catch(() => {});
-            setStatus('PLAYING');
+              playerRef.current = player;
+              player.attachMediaElement(video);
+              player.load();
+              player.play().catch(() => {});
+              setStatus('PLAYING');
 
-            player.on(window.mpegts.Events.ERROR, () => setStatus('ERROR'));
-          } catch (e) {
-            video.src = playUrl;
+              player.on(window.mpegts.Events.ERROR, () => {
+                setStatus('ERROR');
+              });
+            } catch (e) {
+              setStatus('ERROR');
+            }
+          } else {
+            // Modo Reparación HD/FHD (Transcodifica audio AC3 y video HEVC a MP4 H.264/AAC en vivo)
+            const transcodeLiveUrl = `${window.location.origin}/transcode?url=${encodeURIComponent(item.streamUrl)}&audio=0&reencode=1`;
+            video.src = transcodeLiveUrl;
+            video.load();
             video.play().then(() => setStatus('PLAYING')).catch(() => setStatus('ERROR'));
           }
         } else {
-          video.src = playUrl;
+          // PELÍCULAS Y SERIES (VOD)
+          const vodUrl = useServerAudioSwitch
+            ? `${window.location.origin}/transcode?url=${encodeURIComponent(item.streamUrl)}&audio=${selectedAudioTrack}`
+            : directProxyUrl;
+
+          video.src = vodUrl;
           video.load();
-          video.play().then(() => setStatus('PLAYING')).catch(() => setStatus('ERROR'));
+          video.play().then(() => {
+            setStatus('PLAYING');
+            // Detector nativo de pistas de audio si el navegador expone video.audioTracks
+            if (video.audioTracks && video.audioTracks.length > 1) {
+              const detected = [];
+              for (let i = 0; i < video.audioTracks.length; i++) {
+                const t = video.audioTracks[i];
+                detected.push({
+                  index: i,
+                  label: `Pista ${i + 1} — ${t.label || t.language || (i === 0 ? 'Español / Principal' : 'Inglés / Original')}`
+                });
+              }
+              setAudioTracks(detected);
+            }
+          }).catch(() => setStatus('ERROR'));
         }
 
+        video.onplaying = () => setStatus('PLAYING');
         video.onerror = () => setStatus('ERROR');
 
         return () => {
@@ -365,28 +452,171 @@
             playerRef.current = null;
           }
         };
-      }, [item]);
+      }, [item, liveEngine, selectedAudioTrack, useServerAudioSwitch]);
+
+      // Cambiar idioma de audio en Películas y Series
+      const handleAudioChange = (newIndex) => {
+        const idx = Number(newIndex);
+        setSelectedAudioTrack(idx);
+        const video = videoRef.current;
+
+        // 1. Si el navegador soporta cambio nativo de audioTracks, cambiar al instante
+        if (video && video.audioTracks && video.audioTracks.length > 1 && !useServerAudioSwitch) {
+          for (let i = 0; i < video.audioTracks.length; i++) {
+            video.audioTracks[i].enabled = (i === idx);
+          }
+        } else {
+          // 2. Para películas .MKV Duales donde Chrome no expone audioTracks, el servidor extrae la pista elegida
+          setUseServerAudioSwitch(true);
+        }
+      };
+
+      // Activar / Desactivar subtítulos
+      const handleSubtitleChange = (subId) => {
+        setActiveSubtitle(subId);
+        const video = videoRef.current;
+        if (!video || !video.textTracks) return;
+        for (let i = 0; i < video.textTracks.length; i++) {
+          const track = video.textTracks[i];
+          track.mode = (subId !== 'OFF' && track.label === subId) ? 'showing' : 'disabled';
+        }
+      };
+
+      // Subir archivo de subtítulos (.srt o .vtt) desde la PC/Móvil
+      const handleUploadSubtitle = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const rawText = String(ev.target?.result || '');
+          const vttContent = file.name.toLowerCase().endsWith('.srt') ? srtToVtt(rawText) : rawText;
+          const blob = new Blob([vttContent], { type: 'text/vtt' });
+          const blobUrl = URL.createObjectURL(blob);
+          const newSubId = `Subtítulo Local (${file.name})`;
+
+          setSubtitleTracks(prev => [...prev, { id: newSubId, label: newSubId, url: blobUrl }]);
+          setTimeout(() => handleSubtitleChange(newSubId), 150);
+        };
+        reader.readAsText(file);
+      };
+
+      const isVod = item?.type === 'MOVIE' || item?.type === 'EPISODE';
 
       return (
         <div className="bg-[#0B0F19] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+          
+          {/* BARRA SUPERIOR DE CONTROLES AVANZADOS: AUDIO, SUBTÍTULOS Y REPARACIÓN HD/FHD */}
+          <div className="p-3 bg-slate-900/95 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+            {item?.type === 'LIVE' ? (
+              <div className="flex flex-wrap items-center justify-between w-full gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
+                    EN VIVO
+                  </span>
+                  <span className="text-slate-300 font-medium">
+                    Motor actual: <strong className="text-violet-300">{liveEngine === 'MSE' ? 'MPEG-TS Directo (Rápido)' : 'FFmpeg HD/FHD (Audio+Video Compatible)'}</strong>
+                  </span>
+                </div>
+                <button
+                  onClick={() => setLiveEngine(e => e === 'MSE' ? 'FFMPEG_HD' : 'MSE')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition shadow ${liveEngine === 'FFMPEG_HD' ? 'bg-amber-500 text-slate-950' : 'bg-violet-600 hover:bg-violet-500 text-white'}`}
+                >
+                  {liveEngine === 'MSE' ? '🔧 Reparar Canal HD/FHD (Si no abre o sin imagen)' : '⚡ Volver a Modo MPEG-TS Rápido'}
+                </button>
+              </div>
+            ) : isVod ? (
+              <div className="flex flex-wrap items-center gap-3 w-full">
+                {/* 1. DETECTOR Y SELECTOR DE IDIOMA DE AUDIO */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-violet-300 font-bold">🔊 Idioma Audio:</span>
+                  <select
+                    value={selectedAudioTrack}
+                    onChange={(e) => handleAudioChange(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-violet-500/40 text-white font-semibold focus:outline-none"
+                  >
+                    {audioTracks.map(t => (
+                      <option key={t.index} value={t.index}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 2. SELECTOR DE SUBTÍTULOS */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-violet-300 font-bold">💬 Subtítulos:</span>
+                  <select
+                    value={activeSubtitle}
+                    onChange={(e) => handleSubtitleChange(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white font-semibold focus:outline-none"
+                  >
+                    <option value="OFF">Desactivados</option>
+                    {subtitleTracks.map(sub => (
+                      <option key={sub.id} value={sub.label}>{sub.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 3. CARGAR ARCHIVO .SRT / .VTT */}
+                <label className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer border border-slate-700 transition">
+                  + Subir .SRT
+                  <input type="file" accept=".srt,.vtt" onChange={handleUploadSubtitle} className="hidden" />
+                </label>
+              </div>
+            ) : (
+              <span className="text-slate-400">Selecciona un contenido para reproducir</span>
+            )}
+          </div>
+
+          {/* PANTALLA DE VIDEO */}
           <div className="relative aspect-video bg-black flex items-center justify-center">
-            <video ref={videoRef} controls playsInline autoPlay className="w-full h-full object-contain" />
+            <video ref={videoRef} controls playsInline autoPlay crossOrigin="anonymous" className="w-full h-full object-contain">
+              {subtitleTracks.map(sub => (
+                <track
+                  key={sub.id}
+                  kind="subtitles"
+                  label={sub.label}
+                  src={sub.url}
+                  default={activeSubtitle === sub.label}
+                />
+              ))}
+            </video>
+
             {status === 'LOADING' && (
-              <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center p-4 text-center">
+              <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                <span className="text-xs text-violet-300 font-semibold">Sintonizando canal (SD/HD/FHD)...</span>
+                <span className="text-xs text-violet-300 font-semibold">Conectando flujo de video: {item?.title}</span>
               </div>
             )}
+
             {status === 'ERROR' && (
-              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-2">
-                <p className="text-amber-400 font-bold text-sm">Transmisión temporalmente inactiva en el servidor</p>
-                <p className="text-xs text-slate-400">Prueba seleccionando otro canal del listado.</p>
+              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3">
+                <p className="text-amber-400 font-bold text-sm">El canal o archivo requiere decodificación asistida</p>
+                <p className="text-xs text-slate-400 max-w-md">
+                  Algunos canales FHD/HD o películas MKV usan audio Dolby AC3 o video HEVC. Pulsa el botón inferior para procesarlo con el motor del servidor:
+                </p>
+                {item?.type === 'LIVE' ? (
+                  <button
+                    onClick={() => setLiveEngine('FFMPEG_HD')}
+                    className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg"
+                  >
+                    🔧 Activar Decodificador HD/FHD en Servidor
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setUseServerAudioSwitch(true)}
+                    className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg"
+                  >
+                    🔧 Reproducir Película con Decodificador Multi-Audio
+                  </button>
+                )}
               </div>
             )}
           </div>
-          <div className="p-4 border-t border-slate-800">
-            <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un contenido'}</h3>
-            <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{item?.streamUrl}</p>
+
+          <div className="p-4 border-t border-slate-800 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un canal, película o serie'}</h3>
+              <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{item?.streamUrl}</p>
+            </div>
           </div>
         </div>
       );

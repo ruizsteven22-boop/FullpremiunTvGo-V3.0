@@ -2,13 +2,21 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
+
+let ffmpegPath = null;
+try {
+  ffmpegPath = require('ffmpeg-static');
+} catch (_) {
+  ffmpegPath = 'ffmpeg'; // Fallback si está en el sistema
+}
 
 const PORT = process.env.PORT || 3000;
 
-// Función que sigue redirecciones 301/302 internamente en el servidor sin perder cabeceras Range
-function requestWithRedirects(targetUrl, clientHeaders, maxRedirects = 5) {
+// Seguir redirecciones 301/302 internamente y devolver la URL final real o el stream
+function resolveRedirects(targetUrl, clientHeaders = {}, maxRedirects = 6) {
   return new Promise((resolve, reject) => {
-    function hop(currentUrl, redirectsLeft) {
+    function hop(currentUrl, left) {
       let parsed;
       try {
         parsed = new URL(currentUrl);
@@ -18,40 +26,34 @@ function requestWithRedirects(targetUrl, clientHeaders, maxRedirects = 5) {
 
       const lib = parsed.protocol === 'https:' ? https : http;
       const headers = {
-        'User-Agent': 'IPTVSmartersPlayer',
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
         'Accept': '*/*',
-        'Connection': 'keep-alive',
+        'Connection': 'keep-alive'
       };
 
-      // Vital para Películas y Series (.mp4 / .mkv): reenviar Range bytes
       if (clientHeaders['range']) {
         headers['Range'] = clientHeaders['range'];
       }
 
-      const options = {
+      const req = lib.request({
         hostname: parsed.hostname,
         port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
         path: parsed.pathname + parsed.search,
         method: 'GET',
-        headers,
-      };
-
-      const proxyReq = lib.request(options, (proxyRes) => {
-        if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers['location']) {
-          proxyRes.resume(); // Descartar cuerpo del redirect
-          if (redirectsLeft <= 0) {
-            return reject(new Error('Demasiadas redirecciones'));
-          }
-          const nextUrl = new URL(proxyRes.headers['location'], currentUrl).toString();
-          return hop(nextUrl, redirectsLeft - 1);
+        headers
+      }, (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers['location']) {
+          res.resume();
+          if (left <= 0) return reject(new Error('Demasiadas redirecciones'));
+          const nextUrl = new URL(res.headers['location'], currentUrl).toString();
+          return hop(nextUrl, left - 1);
         }
-        resolve({ proxyReq, proxyRes, finalUrl: currentUrl });
+        resolve({ proxyReq: req, proxyRes: res, finalUrl: currentUrl });
       });
 
-      proxyReq.on('error', (err) => reject(err));
-      proxyReq.end();
+      req.on('error', reject);
+      req.end();
     }
-
     hop(targetUrl, maxRedirects);
   });
 }
@@ -60,87 +62,133 @@ http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost:' + PORT}`);
   let pathname = parsedUrl.pathname;
 
-  // Cabeceras CORS globales
+  // CORS global
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Origin');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, X-Upstream-Status');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
   }
 
-  // 1. ENDPOINT DE DIAGNÓSTICO RÁPIDO (/probe?url=...)
-  if (pathname === '/probe') {
+  // =========================================================================
+  // 1. ENDPOINT DE TRANSCODIFICACIÓN / SELECTOR DE PISTA DE AUDIO (/transcode)
+  // Sirve para:
+  // - Canales HD/FHD con audio AC3 o video pesado que solo daban audio o error
+  // - Cambiar el idioma de audio (audioTrack=0, 1, 2) en Películas y Series .mkv
+  // =========================================================================
+  if (pathname === '/transcode') {
     const targetUrl = parsedUrl.searchParams.get('url');
+    const audioTrack = parseInt(parsedUrl.searchParams.get('audio') || '0', 10);
+    const startTime = parseFloat(parsedUrl.searchParams.get('start') || '0');
+    const forceVideoEncode = parsedUrl.searchParams.get('reencode') === '1';
+
     if (!targetUrl) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Falta parámetro url' }));
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('Falta parámetro url');
     }
+
     try {
-      const { proxyReq, proxyRes, finalUrl } = await requestWithRedirects(targetUrl, {});
-      let sample = '';
-      proxyRes.on('data', (chunk) => {
-        if (sample.length < 300) sample += chunk.toString('utf8');
-        proxyReq.destroy();
+      // Resolver token/redirect 302 de Xtream antes de pasarlo a FFmpeg
+      const { proxyReq, proxyRes, finalUrl } = await resolveRedirects(targetUrl, {});
+      proxyRes.resume();
+      proxyReq.destroy();
+
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'X-Accel-Buffering': 'no',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Connection': 'keep-alive'
       });
-      proxyRes.on('end', () => {
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({
-          status: proxyRes.statusCode,
-          contentType: proxyRes.headers['content-type'] || 'desconocido',
-          finalUrl,
-          preview: sample.slice(0, 200)
-        }));
+
+      const ffArgs = [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5'
+      ];
+
+      if (startTime > 0) {
+        ffArgs.push('-ss', String(startTime));
+      }
+
+      ffArgs.push(
+        '-i', finalUrl,
+        '-map', '0:v:0',
+        '-map', `0:a:${audioTrack}?`
+      );
+
+      // Si el canal HD/FHD tiene video HEVC (solo audio en navegador), recodificamos a H.264 ultraligero
+      if (forceVideoEncode) {
+        ffArgs.push(
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'zerolatency',
+          '-pix_fmt', 'yuv420p'
+        );
+      } else {
+        ffArgs.push('-c:v', 'copy');
+      }
+
+      // Convertimos siempre el audio (AC3/EAC3/DTS) a AAC estéreo compatible con todos los navegadores
+      ffArgs.push(
+        '-c:a', 'aac',
+        '-ac', '2',
+        '-b:a', '160k',
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+        '-f', 'mp4',
+        'pipe:1'
+      );
+
+      const ffProc = spawn(ffmpegPath, ffArgs);
+
+      ffProc.stdout.pipe(res);
+
+      req.on('close', () => {
+        try { ffProc.kill('SIGKILL'); } catch (_) {}
       });
-      proxyRes.on('close', () => {
-        if (!res.writableEnded) {
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({
-            status: proxyRes.statusCode,
-            contentType: proxyRes.headers['content-type'] || 'stream-binario',
-            finalUrl,
-            preview: sample.slice(0, 200)
-          }));
-        }
+
+      ffProc.on('error', () => {
+        if (!res.headersSent) res.writeHead(500).end('FFmpeg no disponible');
       });
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: err.message }));
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Error al iniciar transcodificación: ' + err.message);
+      }
     }
     return;
   }
 
-  // 2. ENDPOINT PROXY PRINCIPAL (/proxy?url=...)
+  // =========================================================================
+  // 2. ENDPOINT PROXY DIRECTO (/proxy) - Para API, Canales MPEG-TS y VOD
+  // =========================================================================
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.searchParams.get('url');
     if (!targetUrl) {
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('Falta la URL de destino');
+      return res.end('Falta parámetro url');
     }
 
     try {
-      const { proxyReq, proxyRes } = await requestWithRedirects(targetUrl, req.headers);
+      const { proxyReq, proxyRes } = await resolveRedirects(targetUrl, req.headers);
 
-      // Desactivar buffering en Hostinger Nginx/LiteSpeed
       res.setHeader('X-Accel-Buffering', 'no');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('X-Upstream-Status', String(proxyRes.statusCode));
 
-      // Preservar cabeceras clave para Películas (.mp4/.mkv) y Streams (.ts/.m3u8)
       const forwardHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
       forwardHeaders.forEach((h) => {
-        if (proxyRes.headers[h]) {
-          res.setHeader(h, proxyRes.headers[h]);
-        }
+        if (proxyRes.headers[h]) res.setHeader(h, proxyRes.headers[h]);
       });
 
       if (!res.getHeader('content-type')) {
         res.setHeader('content-type', 'video/mp2t');
       }
 
-      // Enviar el código real (200 OK, 206 Partial Content para VOD, o 403 si TITAN bloquea)
       res.writeHead(proxyRes.statusCode);
       proxyRes.pipe(res);
 
@@ -150,20 +198,22 @@ http.createServer(async (req, res) => {
     } catch (err) {
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Error de conexión en proxy: ' + err.message);
+        res.end('Error de proxy: ' + err.message);
       }
     }
     return;
   }
 
-  // 3. SERVIR INTERFAZ WEB SIN CACHÉ (para que siempre tome los cambios al instante)
+  // =========================================================================
+  // 3. SERVIR INTERFAZ WEB SIN CACHÉ
+  // =========================================================================
   if (pathname === '/' || pathname === '/app') pathname = '/index.html';
   const filePath = path.join(__dirname, 'public', pathname);
 
   fs.readFile(filePath, (err, data) => {
     if (err) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('Archivo no encontrado');
+      return res.end('No encontrado');
     }
     const ext = path.extname(filePath);
     const mimeTypes = {
@@ -178,5 +228,5 @@ http.createServer(async (req, res) => {
   });
 
 }).listen(PORT, () => {
-  console.log(`>>> FULL PREMIUM TVGO v3.0 OPERATIVO EN PUERTO ${PORT} <<<`);
+  console.log(`>>> FULL PREMIUM TVGO v4.0 OPERATIVO EN PUERTO ${PORT} <<<`);
 });

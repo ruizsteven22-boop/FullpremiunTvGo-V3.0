@@ -14,6 +14,12 @@ try {
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_KEY || 'FullPremium2026*';
+
+// ============================================================================
+// TOKEN PRODUCTIVO REAL DE MERCADO PAGO CHILE
+// ============================================================================
+const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || 'APP_USR-1407563312667634-102018-ccb148d6ba9cc8b373fd0f32fa70945c-1567019351';
+
 const TRIAL_DAYS = 12;
 
 // ============================================================================
@@ -37,8 +43,8 @@ function loadDb() {
       priceOfficialCLP: 4000,
       priceExternalCLP: 6000,
       trialDays: 12,
-      whatsappNumber: '+56900000000',
-      paymentInstructions: 'Transferencia Bancaria / Yape / MercadoPago / PayPal'
+      whatsappNumber: '+56979429123',
+      officialEmail: 'activaciones@app.fullpremiumtvcl.com'
     },
     devices: {},
     licenses: {}
@@ -59,62 +65,29 @@ function evaluateDeviceStatus(device) {
   const trialEndsAt = device.firstSeenAt + trialMs;
 
   if (device.blockedManually) {
-    return {
-      allowed: false,
-      status: 'BLOCKED_ADMIN',
-      daysLeft: 0,
-      trialEndsAt,
-      licenseEndsAt: device.licenseEndsAt || null
-    };
+    return { allowed: false, status: 'BLOCKED_ADMIN', daysLeft: 0, trialEndsAt, licenseEndsAt: device.licenseEndsAt || null };
   }
 
   if (device.licenseEndsAt && device.licenseEndsAt > now) {
     const daysLeft = Math.ceil((device.licenseEndsAt - now) / (1000 * 60 * 60 * 24));
-    return {
-      allowed: true,
-      status: 'LICENSED',
-      daysLeft,
-      trialEndsAt,
-      licenseEndsAt: device.licenseEndsAt
-    };
+    return { allowed: true, status: 'LICENSED', daysLeft, trialEndsAt, licenseEndsAt: device.licenseEndsAt };
   }
 
   if (now <= trialEndsAt) {
     const daysLeft = Math.max(1, Math.ceil((trialEndsAt - now) / (1000 * 60 * 60 * 24)));
-    return {
-      allowed: true,
-      status: 'TRIAL',
-      daysLeft,
-      trialEndsAt,
-      licenseEndsAt: null
-    };
+    return { allowed: true, status: 'TRIAL', daysLeft, trialEndsAt, licenseEndsAt: null };
   }
 
-  return {
-    allowed: false,
-    status: 'EXPIRED_TRIAL',
-    daysLeft: 0,
-    trialEndsAt,
-    licenseEndsAt: device.licenseEndsAt || null
-  };
+  return { allowed: false, status: 'EXPIRED_TRIAL', daysLeft: 0, trialEndsAt, licenseEndsAt: device.licenseEndsAt || null };
 }
 
 // ============================================================================
-// TIPO DE CAMBIO DEL DÍA
+// TASA DE CAMBIO DEL DÍA
 // ============================================================================
 let cachedRates = {
   updatedAt: 0,
   base: 'CLP',
-  rates: {
-    CLP: 1,
-    USD: 0.00105,
-    PEN: 0.00395,
-    EUR: 0.00097,
-    ARS: 1.05,
-    COP: 4.45,
-    MXN: 0.021,
-    BRL: 0.0059
-  }
+  rates: { CLP: 1, USD: 0.00105, PEN: 0.00395, EUR: 0.00097, ARS: 1.05, COP: 4.45, MXN: 0.021, BRL: 0.0059 }
 };
 
 function fetchExchangeRates() {
@@ -129,7 +102,7 @@ function fetchExchangeRates() {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(body);
-          if (parsed && parsed.rates) {
+          if (parsed?.rates) {
             cachedRates = {
               updatedAt: now,
               base: 'CLP',
@@ -170,9 +143,6 @@ function readJsonBody(req) {
   });
 }
 
-// ============================================================================
-// RESOLUCIÓN DE REDIRECCIONES PARA STREAMING
-// ============================================================================
 function resolveRedirects(targetUrl, clientHeaders = {}, maxRedirects = 6) {
   return new Promise((resolve, reject) => {
     function hop(currentUrl, left) {
@@ -190,9 +160,7 @@ function resolveRedirects(targetUrl, clientHeaders = {}, maxRedirects = 6) {
         'Connection': 'keep-alive'
       };
 
-      if (clientHeaders['range']) {
-        headers['Range'] = clientHeaders['range'];
-      }
+      if (clientHeaders['range']) headers['Range'] = clientHeaders['range'];
 
       const req = lib.request({
         hostname: parsed.hostname,
@@ -234,7 +202,7 @@ http.createServer(async (req, res) => {
     return res.end();
   }
 
-  // 1. API: ESTADO DE DISPOSITIVO Y 12 DÍAS DE PRUEBA
+  // 1. INICIALIZAR Y VERIFICAR DISPOSITIVO
   if (pathname === '/api/device/init' && req.method === 'POST') {
     try {
       const body = await readJsonBody(req);
@@ -284,23 +252,134 @@ http.createServer(async (req, res) => {
     }
   }
 
-  // 2. API: ACTIVAR CÓDIGO DE LICENCIA ANUAL
+  // 2. CREAR PREFERENCIA DE PAGO EN MERCADO PAGO CHILE
+  if (pathname === '/api/payment/create-preference' && req.method === 'POST') {
+    try {
+      const body = await readJsonBody(req);
+      const deviceId = String(body.deviceId || '').trim().toUpperCase();
+      const isOfficial = body.tier === 'OFFICIAL';
+      const db = loadDb();
+      const price = isOfficial ? db.settings.priceOfficialCLP : db.settings.priceExternalCLP;
+      const title = isOfficial
+        ? 'Licencia Anual 365 Días — Full Premium TvGo'
+        : 'Licencia Anual 365 Días (Lista Propia) — Full Premium TvGo';
+
+      const preferencePayload = JSON.stringify({
+        items: [
+          {
+            title: `${title} [ID: ${deviceId}]`,
+            description: `Activación por 1 año para el dispositivo ${deviceId}`,
+            quantity: 1,
+            currency_id: 'CLP',
+            unit_price: Number(price)
+          }
+        ],
+        external_reference: deviceId,
+        metadata: {
+          device_id: deviceId,
+          tier: isOfficial ? 'OFFICIAL' : 'EXTERNAL'
+        },
+        back_urls: {
+          success: `https://${req.headers.host || 'app.fullpremiumtvcl.com'}/?status=success&device=${deviceId}`,
+          pending: `https://${req.headers.host || 'app.fullpremiumtvcl.com'}/?status=pending`,
+          failure: `https://${req.headers.host || 'app.fullpremiumtvcl.com'}/?status=failure`
+        },
+        auto_return: 'approved',
+        notification_url: `https://${req.headers.host || 'app.fullpremiumtvcl.com'}/api/webhook/mercadopago`
+      });
+
+      const mpReq = https.request('https://api.mercadopago.com/checkout/preferences', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${MP_ACCESS_TOKEN}`
+        }
+      }, (mpRes) => {
+        let data = '';
+        mpRes.on('data', chunk => data += chunk);
+        mpRes.on('end', () => {
+          try {
+            const resp = JSON.parse(data);
+            if (resp.init_point) {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({ init_point: resp.init_point }));
+            }
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: resp.message || 'Error al conectar con Mercado Pago' }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Respuesta inválida de Mercado Pago' }));
+          }
+        });
+      });
+
+      mpReq.on('error', (err) => {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
+
+      mpReq.write(preferencePayload);
+      mpReq.end();
+      return;
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+  // 3. WEBHOOK DE MERCADO PAGO: ACTIVACIÓN AUTOMÁTICA DEL DISPOSITIVO
+  if (pathname === '/api/webhook/mercadopago') {
+    const paymentId = parsedUrl.searchParams.get('data.id') || parsedUrl.searchParams.get('id');
+    const topic = parsedUrl.searchParams.get('type') || parsedUrl.searchParams.get('topic');
+
+    if (paymentId && (topic === 'payment' || !topic)) {
+      https.get(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+        headers: { 'Authorization': `Bearer ${MP_ACCESS_TOKEN}` }
+      }, (mpRes) => {
+        let body = '';
+        mpRes.on('data', d => body += d);
+        mpRes.on('end', () => {
+          try {
+            const payment = JSON.parse(body);
+            if (payment.status === 'approved') {
+              const targetDeviceId = (payment.metadata?.device_id || payment.external_reference || '').toUpperCase();
+              if (targetDeviceId) {
+                const db = loadDb();
+                const now = Date.now();
+                if (db.devices[targetDeviceId]) {
+                  db.devices[targetDeviceId].licenseEndsAt = now + 365 * 24 * 60 * 60 * 1000;
+                  db.devices[targetDeviceId].licenseCode = `MP-${paymentId}`;
+                  db.devices[targetDeviceId].blockedManually = false;
+                  saveDb(db);
+                  console.log(`[PAGO APROBADO] Dispositivo ${targetDeviceId} activado por 365 días vía Mercado Pago #${paymentId}`);
+                }
+              }
+            }
+          } catch (_) {}
+        });
+      }).on('error', () => {});
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ received: true }));
+  }
+
+  // 4. ACTIVAR MANUALMENTE CON CÓDIGO
   if (pathname === '/api/license/activate' && req.method === 'POST') {
     try {
       const body = await readJsonBody(req);
       const deviceId = String(body.deviceId || '').trim().toUpperCase();
       const code = String(body.code || '').trim().toUpperCase();
-
       const db = loadDb();
       const lic = db.licenses[code];
 
       if (!lic) {
-        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.writeHead(404, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: 'El código de licencia ingresado no existe.' }));
       }
 
       if (lic.usedBy && lic.usedBy !== deviceId) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: `Esta licencia ya fue activada en otro dispositivo (${lic.usedBy}).` }));
       }
 
@@ -328,14 +407,11 @@ http.createServer(async (req, res) => {
       db.devices[deviceId].blockedManually = false;
 
       saveDb(db);
-      const evaluation = evaluateDeviceStatus(db.devices[deviceId]);
-
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({
         ok: true,
         message: `Licencia activada con éxito por ${durationDays} días.`,
-        access: evaluation,
-        device: db.devices[deviceId]
+        access: evaluateDeviceStatus(db.devices[deviceId])
       }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -343,11 +419,11 @@ http.createServer(async (req, res) => {
     }
   }
 
-  // 3. API PRIVADA DE ADMINISTRACIÓN
+  // 5. API PRIVADA DE ADMINISTRACIÓN
   if (pathname.startsWith('/api/admin/')) {
     const providedKey = req.headers['x-admin-key'] || parsedUrl.searchParams.get('key');
     if (providedKey !== ADMIN_SECRET) {
-      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.writeHead(401, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'Contraseña de administrador incorrecta' }));
     }
 
@@ -361,20 +437,13 @@ http.createServer(async (req, res) => {
 
       const licensesList = Object.values(db.licenses).sort((a, b) => b.createdAt - a.createdAt);
 
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({
-        settings: db.settings,
-        devices: devicesList,
-        licenses: licensesList
-      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ settings: db.settings, devices: devicesList, licenses: licensesList }));
     }
 
     if (pathname === '/api/admin/generate-license' && req.method === 'POST') {
       const body = await readJsonBody(req);
       const tier = body.tier === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL';
-      const durationDays = Number(body.durationDays) || 365;
-      const note = String(body.note || '').trim();
-
       const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
       const prefix = tier === 'OFFICIAL' ? 'FP4K' : 'FP6K';
       const code = `${prefix}-${rand.slice(0, 4)}-${rand.slice(4, 8)}`;
@@ -383,16 +452,14 @@ http.createServer(async (req, res) => {
         code,
         tier,
         priceCLP: tier === 'OFFICIAL' ? db.settings.priceOfficialCLP : db.settings.priceExternalCLP,
-        durationDays,
-        note,
+        durationDays: 365,
+        note: String(body.note || '').trim(),
         createdAt: Date.now(),
-        usedBy: null,
-        activatedAt: null,
-        expiresAt: null
+        usedBy: null
       };
 
       saveDb(db);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok: true, license: db.licenses[code] }));
     }
 
@@ -400,8 +467,8 @@ http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const deviceId = String(body.deviceId || '').toUpperCase();
       const action = body.action;
-
       const dev = db.devices[deviceId];
+
       if (!dev) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: 'Dispositivo no encontrado' }));
@@ -423,26 +490,12 @@ http.createServer(async (req, res) => {
       }
 
       saveDb(db);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ ok: true, device: dev }));
-    }
-
-    if (pathname === '/api/admin/settings' && req.method === 'POST') {
-      const body = await readJsonBody(req);
-      db.settings = {
-        ...db.settings,
-        priceOfficialCLP: Number(body.priceOfficialCLP) || 4000,
-        priceExternalCLP: Number(body.priceExternalCLP) || 6000,
-        whatsappNumber: String(body.whatsappNumber || db.settings.whatsappNumber),
-        paymentInstructions: String(body.paymentInstructions || db.settings.paymentInstructions)
-      };
-      saveDb(db);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ ok: true, settings: db.settings }));
     }
   }
 
-  // 4. TRANSCODIFICACIÓN EN VIVO (HD/FHD Y MULTI-AUDIO)
+  // 6. STREAMING TRANSCODE
   if (pathname === '/transcode') {
     const targetUrl = parsedUrl.searchParams.get('url');
     const audioTrack = parseInt(parsedUrl.searchParams.get('audio') || '0', 10);
@@ -450,7 +503,7 @@ http.createServer(async (req, res) => {
     const forceVideoEncode = parsedUrl.searchParams.get('reencode') === '1';
 
     if (!targetUrl) {
-      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
       return res.end('Falta parámetro url');
     }
 
@@ -476,7 +529,6 @@ http.createServer(async (req, res) => {
       ];
 
       if (startTime > 0) ffArgs.push('-ss', String(startTime));
-
       ffArgs.push('-i', finalUrl, '-map', '0:v:0', '-map', `0:a:${audioTrack}?`);
 
       if (forceVideoEncode) {
@@ -485,14 +537,7 @@ http.createServer(async (req, res) => {
         ffArgs.push('-c:v', 'copy');
       }
 
-      ffArgs.push(
-        '-c:a', 'aac',
-        '-ac', '2',
-        '-b:a', '160k',
-        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-        '-f', 'mp4',
-        'pipe:1'
-      );
+      ffArgs.push('-c:a', 'aac', '-ac', '2', '-b:a', '160k', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1');
 
       const ffProc = spawn(ffmpegPath, ffArgs);
       ffProc.stdout.pipe(res);
@@ -500,24 +545,20 @@ http.createServer(async (req, res) => {
       req.on('close', () => {
         try { ffProc.kill('SIGKILL'); } catch (_) {}
       });
-
-      ffProc.on('error', () => {
-        if (!res.headersSent) res.writeHead(500).end('FFmpeg no disponible');
-      });
     } catch (err) {
       if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Error al iniciar transcodificación: ' + err.message);
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end('Error de transcodificación: ' + err.message);
       }
     }
     return;
   }
 
-  // 5. ENDPOINT PROXY DIRECTO (CORREGIDO CON SETNODELAY)
+  // 7. PROXY DIRECTO (.TS) CON SOCKET NODELAY
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.searchParams.get('url');
     if (!targetUrl) {
-      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
       return res.end('Falta parámetro url');
     }
 
@@ -527,14 +568,11 @@ http.createServer(async (req, res) => {
       res.setHeader('X-Accel-Buffering', 'no');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-      const forwardHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
-      forwardHeaders.forEach((h) => {
+      ['content-type', 'content-length', 'content-range', 'accept-ranges'].forEach((h) => {
         if (proxyRes.headers[h]) res.setHeader(h, proxyRes.headers[h]);
       });
 
-      if (!res.getHeader('content-type')) {
-        res.setHeader('content-type', 'video/mp2t');
-      }
+      if (!res.getHeader('content-type')) res.setHeader('content-type', 'video/mp2t');
 
       res.writeHead(proxyRes.statusCode);
       if (req.socket) req.socket.setNoDelay(true);
@@ -543,20 +581,20 @@ http.createServer(async (req, res) => {
       req.on('close', () => proxyReq.destroy());
     } catch (err) {
       if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
         res.end('Error de proxy: ' + err.message);
       }
     }
     return;
   }
 
-  // 6. SERVIR ARCHIVOS ESTÁTICOS Y PWA
+  // 8. SERVIR FRONTEND
   if (pathname === '/' || pathname === '/app') pathname = '/index.html';
   const filePath = path.join(__dirname, 'public', pathname);
 
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
       return res.end('No encontrado');
     }
     const ext = path.extname(filePath);
@@ -565,14 +603,13 @@ http.createServer(async (req, res) => {
       '.js': 'text/javascript; charset=utf-8',
       '.css': 'text/css; charset=utf-8',
       '.json': 'application/json; charset=utf-8',
-      '.png': 'image/png',
-      '.svg': 'image/svg+xml'
+      '.png': 'image/png'
     };
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain' });
     res.end(data);
   });
 
 }).listen(PORT, () => {
-  console.log(`>>> FULL PREMIUM TVGO v5.0 OPERATIVO EN PUERTO ${PORT} <<<`);
+  console.log(`>>> FULL PREMIUM TVGO OPERATIVO CON MERCADO PAGO EN PUERTO ${PORT} <<<`);
 });

@@ -1,0 +1,13 @@
+{
+  "name": "full-premium-tvgo",
+  "version": "3.0.0",
+  "description": "Plataforma OTT Oficial - Full Premium TvGo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Full Premium TvGo v3.0 — Plataforma OTT Oficial</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-[#05070D] text-slate-100 min-h-screen font-sans selection:bg-violet-600 selection:text-white">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    const SERVER_HOST = 'http://st.xn--aejo-gqa.de:80';
+
+    function App() {
+      const [auth, setAuth] = useState(false);
+      const [username, setUsername] = useState('MarcoRomero');
+      const [password, setPassword] = useState('ZLK1oAddlk');
+
+      // Pestaña activa: 'LIVE' | 'MOVIES' | 'SERIES'
+      const [activeTab, setActiveTab] = useState('LIVE');
+
+      // Categorías separadas para cada sección
+      const [categories, setCategories] = useState({
+        LIVE: [],
+        MOVIES: [],
+        SERIES: []
+      });
+      const [selectedCategory, setSelectedCategory] = useState('ALL');
+
+      // Catálogos separados
+      const [liveCatalog, setLiveCatalog] = useState([]);
+      const [moviesCatalog, setMoviesCatalog] = useState([]);
+      const [seriesCatalog, setSeriesCatalog] = useState([]);
+
+      // Paginación para evitar que Chrome se congele con 23.000 películas
+      const [visibleLimit, setVisibleLimit] = useState(80);
+
+      // Episodios de series cuando el usuario selecciona una serie
+      const [seriesEpisodes, setSeriesEpisodes] = useState([]);
+      const [loadingSeriesInfo, setLoadingSeriesInfo] = useState(false);
+
+      const [activeItem, setActiveItem] = useState(null);
+      const [search, setSearch] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [loadingStatus, setLoadingStatus] = useState('');
+
+      // Modo de reproducción: 'PROXY' (pasa por Hostinger) | 'DIRECT' (directo desde el navegador del cliente)
+      const [streamMode, setStreamMode] = useState('PROXY');
+
+      const fetchJsonViaProxy = async (actionUrl) => {
+        const res = await fetch(`/proxy?url=${encodeURIComponent(actionUrl)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      };
+
+      const handleLogin = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+          const baseApi = `${SERVER_HOST}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}`;
+
+          // 1. Cargar las 3 listas de Categorías (TV, Películas, Series)
+          setLoadingStatus('1/4 Descargando grupos de TV, Películas y Series...');
+          const [liveCats, vodCats, serCats] = await Promise.all([
+            fetchJsonViaProxy(`${baseApi}&action=get_live_categories`).catch(() => []),
+            fetchJsonViaProxy(`${baseApi}&action=get_vod_categories`).catch(() => []),
+            fetchJsonViaProxy(`${baseApi}&action=get_series_categories`).catch(() => [])
+          ]);
+
+          const liveCatMap = {};
+          const vodCatMap = {};
+          const serCatMap = {};
+
+          if (Array.isArray(liveCats)) liveCats.forEach(c => { liveCatMap[String(c.category_id)] = c.category_name; });
+          if (Array.isArray(vodCats)) vodCats.forEach(c => { vodCatMap[String(c.category_id)] = c.category_name; });
+          if (Array.isArray(serCats)) serCats.forEach(c => { serCatMap[String(c.category_id)] = c.category_name; });
+
+          setCategories({
+            LIVE: Array.isArray(liveCats) ? liveCats : [],
+            MOVIES: Array.isArray(vodCats) ? vodCats : [],
+            SERIES: Array.isArray(serCats) ? serCats : []
+          });
+
+          // 2. Cargar Canales de TV en Vivo
+          setLoadingStatus('2/4 Descargando canales de TV en Vivo...');
+          const liveData = await fetchJsonViaProxy(`${baseApi}&action=get_live_streams`);
+          let mappedLive = [];
+          if (Array.isArray(liveData)) {
+            mappedLive = liveData.map((ch, idx) => {
+              const catId = String(ch.category_id || '');
+              return {
+                type: 'LIVE',
+                id: `live-${ch.stream_id || idx}`,
+                streamId: ch.stream_id,
+                title: ch.name || `Canal ${idx + 1}`,
+                logo: ch.stream_icon || '',
+                categoryId: catId,
+                categoryName: liveCatMap[catId] || 'TV en Vivo',
+                tsUrl: `${SERVER_HOST}/live/${username}/${password}/${ch.stream_id}.ts`,
+                hlsUrl: `${SERVER_HOST}/live/${username}/${password}/${ch.stream_id}.m3u8`,
+                streamUrl: `${SERVER_HOST}/live/${username}/${password}/${ch.stream_id}.ts`
+              };
+            });
+            setLiveCatalog(mappedLive);
+            if (mappedLive.length > 0) setActiveItem(mappedLive[0]);
+          }
+
+          // 3. Cargar Películas (VOD)
+          setLoadingStatus('3/4 Descargando catálogo de Películas...');
+          const moviesData = await fetchJsonViaProxy(`${baseApi}&action=get_vod_streams`);
+          if (Array.isArray(moviesData)) {
+            const mappedMovies = moviesData.map((m, idx) => {
+              const catId = String(m.category_id || '');
+              const ext = m.container_extension || 'mp4';
+              return {
+                type: 'MOVIE',
+                id: `movie-${m.stream_id || idx}`,
+                streamId: m.stream_id,
+                title: m.name || `Película ${idx + 1}`,
+                logo: m.stream_icon || '',
+                ext,
+                categoryId: catId,
+                categoryName: vodCatMap[catId] || 'Películas',
+                streamUrl: `${SERVER_HOST}/movie/${username}/${password}/${m.stream_id}.${ext}`
+              };
+            });
+            setMoviesCatalog(mappedMovies);
+          }
+
+          // 4. Cargar Series
+          setLoadingStatus('4/4 Descargando catálogo de Series...');
+          const seriesData = await fetchJsonViaProxy(`${baseApi}&action=get_series`);
+          if (Array.isArray(seriesData)) {
+            const mappedSeries = seriesData.map((s, idx) => {
+              const catId = String(s.category_id || '');
+              return {
+                type: 'SERIE',
+                id: `serie-${s.series_id || idx}`,
+                seriesId: s.series_id,
+                title: s.name || `Serie ${idx + 1}`,
+                logo: s.cover || '',
+                categoryId: catId,
+                categoryName: serCatMap[catId] || 'Series',
+                streamUrl: ''
+              };
+            });
+            setSeriesCatalog(mappedSeries);
+          }
+
+          setAuth(true);
+        } catch (err) {
+          alert('Error al conectar con el servidor Xtream: ' + err.message);
+        } finally {
+          setLoading(false);
+          setLoadingStatus('');
+        }
+      };
+
+      // Cuando el usuario hace clic en una Serie, cargamos sus capítulos reales con get_series_info
+      const handleSelectItem = async (item) => {
+        if (item.type === 'SERIE' && item.seriesId) {
+          setLoadingSeriesInfo(true);
+          setSeriesEpisodes([]);
+          try {
+            const infoUrl = `${SERVER_HOST}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${item.seriesId}`;
+            const data = await fetchJsonViaProxy(infoUrl);
+            const episodesObj = data?.episodes || {};
+            const epList = [];
+            Object.keys(episodesObj).forEach((seasonNum) => {
+              const seasonArr = episodesObj[seasonNum] || [];
+              seasonArr.forEach((ep) => {
+                const ext = ep.container_extension || 'mp4';
+                epList.push({
+                  type: 'EPISODE',
+                  id: `ep-${ep.id}`,
+                  title: `${item.title} - T${seasonNum}:E${ep.episode_num} - ${ep.title || 'Capítulo'}`,
+                  ext,
+                  categoryName: `Temporada ${seasonNum}`,
+                  streamUrl: `${SERVER_HOST}/series/${username}/${password}/${ep.id}.${ext}`
+                });
+              });
+            });
+            setSeriesEpisodes(epList);
+            if (epList.length > 0) {
+              setActiveItem(epList[0]);
+            } else {
+              alert('Esta serie no tiene episodios cargados en el servidor.');
+            }
+          } catch (e) {
+            alert('No se pudieron obtener los episodios de la serie.');
+          } finally {
+            setLoadingSeriesInfo(false);
+          }
+        } else {
+          setActiveItem(item);
+        }
+      };
+
+      // Catálogo estricto según la pestaña seleccionada
+      const currentCatalog = useMemo(() => {
+        if (activeTab === 'LIVE') return liveCatalog;
+        if (activeTab === 'MOVIES') return moviesCatalog;
+        if (activeTab === 'SERIES') return seriesCatalog;
+        return [];
+      }, [activeTab, liveCatalog, moviesCatalog, seriesCatalog]);
+
+      // Categorías de la pestaña activa
+      const currentCategories = useMemo(() => {
+        return categories[activeTab] || [];
+      }, [categories, activeTab]);
+
+      // Filtrado estricto por Grupo + Búsqueda dentro de la pestaña activa
+      const filteredItems = useMemo(() => {
+        let list = currentCatalog;
+        if (selectedCategory !== 'ALL') {
+          list = list.filter(item => String(item.categoryId) === String(selectedCategory));
+        }
+        const q = search.trim().toLowerCase();
+        if (q) {
+          list = list.filter(item => item.title.toLowerCase().includes(q));
+        }
+        return list;
+      }, [currentCatalog, selectedCategory, search]);
+
+      // Solo renderizamos hasta visibleLimit (80 por defecto) para que Chrome vuele y jamás se cuelgue
+      const visibleItems = useMemo(() => {
+        return filteredItems.slice(0, visibleLimit);
+      }, [filteredItems, visibleLimit]);
+
+      const handleTabChange = (newTab) => {
+        setActiveTab(newTab);
+        setSelectedCategory('ALL');
+        setSearch('');
+        setVisibleLimit(80);
+        setSeriesEpisodes([]);
+        const targetList = newTab === 'LIVE' ? liveCatalog : newTab === 'MOVIES' ? moviesCatalog : seriesCatalog;
+        if (targetList.length > 0 && newTab !== 'SERIES') {
+          setActiveItem(targetList[0]);
+        }
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col">
+          <header className="bg-[#0B0F19] border-b border-slate-800 px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center font-extrabold text-white text-lg shadow-lg shadow-violet-500/20">TV</div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full">v3.0 Grupos Activos</span>
+                </div>
+                <p className="text-[11px] text-slate-400">app.fullpremiumtvcl.com</p>
+              </div>
+            </div>
+
+            {auth && (
+              <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800 gap-1 text-xs">
+                <button
+                  onClick={() => handleTabChange('LIVE')}
+                  className={`px-3.5 py-1.5 rounded-lg font-bold transition ${activeTab === 'LIVE' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                >
+                  📺 TV en Vivo ({liveCatalog.length})
+                </button>
+                <button
+                  onClick={() => handleTabChange('MOVIES')}
+                  className={`px-3.5 py-1.5 rounded-lg font-bold transition ${activeTab === 'MOVIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                >
+                  🎬 Películas ({moviesCatalog.length})
+                </button>
+                <button
+                  onClick={() => handleTabChange('SERIES')}
+                  className={`px-3.5 py-1.5 rounded-lg font-bold transition ${activeTab === 'SERIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                >
+                  📂 Series ({seriesCatalog.length})
+                </button>
+              </div>
+            )}
+
+            {auth && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setStreamMode(m => m === 'PROXY' ? 'DIRECT' : 'PROXY')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${streamMode === 'PROXY' ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300' : 'bg-amber-500/20 border-amber-500/40 text-amber-300'}`}
+                  title="Cambia entre Proxy del Servidor y Conexión Directa si el panel bloquea la IP de Hostinger"
+                >
+                  Modo: {streamMode === 'PROXY' ? '🛡️ Proxy Hostinger' : '⚡ Directo IP Cliente'}
+                </button>
+                <button onClick={() => setAuth(false)} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700">
+                  Salir ({username})
+                </button>
+              </div>
+            )}
+          </header>
+
+          <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 lg:p-6">
+            {!auth ? (
+              <div className="max-w-md mx-auto mt-14 bg-[#0B0F19] border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-6">
+                <div className="text-center space-y-1">
+                  <h2 className="text-xl font-bold text-white">Iniciar Sesión Suscriptor</h2>
+                  <p className="text-xs text-slate-400">Sincronización por Grupos: TV en Vivo, Películas y Series</p>
+                </div>
+                <form onSubmit={handleLogin} className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1">Usuario</label>
+                    <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" required />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1">Contraseña</label>
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" required />
+                  </div>
+                  <button type="submit" disabled={loading} className="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg disabled:opacity-50 transition">
+                    {loading ? loadingStatus : 'Entrar a Full Premium TvGo'}
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                {/* Columna Izquierda: Selector de Grupos + Búsqueda + Lista Paginada */}
+                <div className="xl:col-span-5 bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-col h-[720px]">
+                  
+                  {/* 1. DESPLEGABLE DE GRUPOS / SECCIONES */}
+                  <div className="mb-2.5">
+                    <label className="block text-[11px] font-bold text-violet-300 mb-1">
+                      Filtrar por Grupo / Categoría ({currentCategories.length} grupos disponibles):
+                    </label>
+                    <select
+                      value={selectedCategory}
+                      onChange={(e) => {
+                        setSelectedCategory(e.target.value);
+                        setVisibleLimit(80);
+                      }}
+                      className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-violet-500/40 text-xs text-white font-semibold focus:outline-none focus:border-violet-400"
+                    >
+                      <option value="ALL">
+                        📂 Todos los Grupos de {activeTab === 'LIVE' ? 'TV en Vivo' : activeTab === 'MOVIES' ? 'Películas' : 'Series'} ({currentCatalog.length})
+                      </option>
+                      {currentCategories.map(cat => (
+                        <option key={cat.category_id} value={String(cat.category_id)}>
+                          📁 {cat.category_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* 2. BUSCADOR EXCLUSIVO DE LA SECCIÓN ACTUAL */}
+                  <div className="mb-3">
+                    <input
+                      type="text"
+                      placeholder={`Buscar solo en ${activeTab === 'LIVE' ? 'TV en Vivo' : activeTab === 'MOVIES' ? 'Películas' : 'Series'} (${filteredItems.length} resultados)...`}
+                      value={search}
+                      onChange={e => {
+                        setSearch(e.target.value);
+                        setVisibleLimit(80);
+                      }}
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
+                    />
+                  </div>
+
+                  {/* Si seleccionó una Serie, mostrar selector de Episodios arriba */}
+                  {activeTab === 'SERIES' && (loadingSeriesInfo || seriesEpisodes.length > 0) && (
+                    <div className="mb-3 p-2.5 rounded-xl bg-violet-950/30 border border-violet-500/30 max-h-44 overflow-y-auto">
+                      <div className="text-[11px] font-bold text-violet-300 mb-1.5">
+                        {loadingSeriesInfo ? 'Cargando episodios de la serie...' : `Episodios disponibles (${seriesEpisodes.length}):`}
+                      </div>
+                      <div className="space-y-1">
+                        {seriesEpisodes.map(ep => (
+                          <button
+                            key={ep.id}
+                            onClick={() => setActiveItem(ep)}
+                            className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] truncate transition ${activeItem?.id === ep.id ? 'bg-violet-600 text-white font-bold' : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800'}`}
+                          >
+                            ▶️ {ep.title}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 3. LISTA DE ELEMENTOS PAGINADA (Sin congelar el navegador) */}
+                  <div key={activeTab + '-' + selectedCategory} className="flex-1 overflow-y-auto divide-y divide-slate-800/60 pr-1">
+                    {visibleItems.map(item => (
+                      <div
+                        key={item.id}
+                        onClick={() => handleSelectItem(item)}
+                        className={`p-3 rounded-xl cursor-pointer transition flex items-center justify-between gap-2 ${activeItem?.id === item.id ? 'bg-violet-600/20 border border-violet-500/40 text-white' : 'hover:bg-slate-800/50 text-slate-300'}`}
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold truncate">{item.title}</div>
+                          <div className="text-[10px] text-violet-300/80 truncate">📁 {item.categoryName}</div>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-violet-600/30 text-violet-200 text-[10px] font-semibold shrink-0">
+                          {item.type === 'SERIE' ? 'Capítulos' : 'Ver'}
+                        </span>
+                      </div>
+                    ))}
+
+                    {visibleItems.length < filteredItems.length && (
+                      <button
+                        onClick={() => setVisibleLimit(prev => prev + 100)}
+                        className="w-full py-2.5 mt-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-violet-300 transition"
+                      >
+                        Mostrar 100 más (Mostrando {visibleItems.length} de {filteredItems.length})
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Columna Derecha: Reproductor + Diagnóstico en Vivo */}
+                <div className="xl:col-span-7">
+                  <VideoPlayer item={activeItem} streamMode={streamMode} setStreamMode={setStreamMode} />
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    function VideoPlayer({ item, streamMode, setStreamMode }) {
+      const videoRef = useRef(null);
+      const [status, setStatus] = useState('IDLE');
+      const [probeInfo, setProbeInfo] = useState(null);
+      const [liveFormat, setLiveFormat] = useState('TS'); // 'TS' | 'HLS'
+      const playerRef = useRef(null);
+
+      // Consultar diagnóstico rápido al servidor cuando falla o carga un stream
+      const runProbe = async (urlToCheck) => {
+        if (!urlToCheck) return;
+        setProbeInfo({ loading: true });
+        try {
+          const res = await fetch(`/probe?url=${encodeURIComponent(urlToCheck)}`);
+          const data = await res.json();
+          setProbeInfo(data);
+        } catch (err) {
+          setProbeInfo({ error: err.message });
+        }
+      };
+
+      useEffect(() => {
+        if (!item?.streamUrl || !videoRef.current) return;
+        setStatus('LOADING');
+        setProbeInfo(null);
+        const video = videoRef.current;
+
+        if (playerRef.current) {
+          try {
+            if (playerRef.current.destroy) playerRef.current.destroy();
+          } catch (_) {}
+          playerRef.current = null;
+        }
+
+        // Elegir URL según formato (TS o HLS para TV en vivo)
+        const rawTargetUrl = (item.type === 'LIVE' && liveFormat === 'HLS' && item.hlsUrl)
+          ? item.hlsUrl
+          : item.streamUrl;
+
+        const playUrl = streamMode === 'PROXY'
+          ? `${window.location.origin}/proxy?url=${encodeURIComponent(rawTargetUrl)}`
+          : rawTargetUrl;
+
+        if (item.type === 'LIVE') {
+          if (liveFormat === 'HLS' && window.Hls && window.Hls.isSupported()) {
+            const hls = new window.Hls({ enableWorker: true, lowLatencyMode: true });
+            playerRef.current = hls;
+            hls.loadSource(playUrl);
+            hls.attachMedia(video);
+            hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+              setStatus('PLAYING');
+              video.play().catch(() => {});
+            });
+            hls.on(window.Hls.Events.ERROR, (_, data) => {
+              if (data.fatal) {
+                setStatus('ERROR');
+                runProbe(rawTargetUrl);
+              }
+            });
+          } else if (window.mpegts && window.mpegts.isSupported()) {
+            try {
+              const player = window.mpegts.createPlayer({
+                type: 'mse',
+                isLive: true,
+                url: playUrl,
+              }, {
+                enableWorker: true,
+                lazyLoad: false,
+                liveBufferLatencyChasing: true
+              });
+
+              playerRef.current = player;
+              player.attachMediaElement(video);
+              player.load();
+              player.play().catch(() => {});
+
+              player.on(window.mpegts.Events.ERROR, () => {
+                setStatus('ERROR');
+                runProbe(rawTargetUrl);
+              });
+            } catch (e) {
+              setStatus('ERROR');
+              runProbe(rawTargetUrl);
+            }
+          }
+        } else {
+          // Películas y Episodios de Series (.mp4 / .mkv)
+          video.src = playUrl;
+          video.load();
+          video.play().then(() => setStatus('PLAYING')).catch(() => {});
+        }
+
+        video.onplaying = () => setStatus('PLAYING');
+        video.onerror = () => {
+          setStatus('ERROR');
+          runProbe(rawTargetUrl);
+        };
+
+        return () => {
+          if (playerRef.current) {
+            try { if (playerRef.current.destroy) playerRef.current.destroy(); } catch (_) {}
+            playerRef.current = null;
+          }
+        };
+      }, [item, streamMode, liveFormat]);
+
+      const isMkv = item?.streamUrl?.toLowerCase().endsWith('.mkv');
+
+      return (
+        <div className="bg-[#0B0F19] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl space-y-0">
+          {/* Barra de herramientas del reproductor */}
+          <div className="px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-slate-300">Formato:</span>
+              {item?.type === 'LIVE' ? (
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setLiveFormat('TS')}
+                    className={`px-2.5 py-1 rounded font-bold ${liveFormat === 'TS' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400'}`}
+                  >
+                    MPEG-TS (.ts)
+                  </button>
+                  <button
+                    onClick={() => setLiveFormat('HLS')}
+                    className={`px-2.5 py-1 rounded font-bold ${liveFormat === 'HLS' ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400'}`}
+                  >
+                    HLS (.m3u8)
+                  </button>
+                </div>
+              ) : (
+                <span className="px-2 py-0.5 rounded bg-slate-800 text-violet-300 font-mono">
+                  VOD ({item?.ext || 'mp4/mkv'})
+                </span>
+              )}
+            </div>
+
+            {item?.streamUrl && (
+              <button
+                onClick={() => runProbe(item.streamUrl)}
+                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold border border-slate-700"
+              >
+                🔍 Diagnosticar Señal en Servidor
+              </button>
+            )}
+          </div>
+
+          <div className="relative aspect-video bg-black flex items-center justify-center">
+            <video ref={videoRef} controls playsInline autoPlay className="w-full h-full object-contain" />
+            
+            {status === 'LOADING' && (
+              <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+                <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                <span className="text-xs text-violet-300 font-semibold">Conectando flujo: {item?.title}</span>
+              </div>
+            )}
+
+            {status === 'ERROR' && (
+              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3">
+                <p className="text-amber-400 font-bold text-sm">Transmisión no disponible en este modo</p>
+                {isMkv && (
+                  <p className="text-xs text-amber-200 max-w-md">
+                    Nota: Este archivo de película está en contenedor <strong>.MKV</strong> (Audio AC3/DTS). Algunos navegadores web solo reproducen nativamente películas en <strong>.MP4</strong>.
+                  </p>
+                )}
+                {probeInfo && !probeInfo.loading && (
+                  <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-left text-[11px] font-mono text-slate-300 max-w-lg w-full">
+                    <div><strong>Respuesta de TITAN a Hostinger:</strong> HTTP {probeInfo.status || 'Error'}</div>
+                    <div><strong>Tipo:</strong> {probeInfo.contentType}</div>
+                    {probeInfo.preview && probeInfo.preview.includes('blocked') && (
+                      <div className="text-rose-400 mt-1 font-sans font-bold">
+                        ⚠️ El firewall de TITAN tiene bloqueada la IP del Datacenter de Hostinger (403 ASN Block). Cambia el botón superior a "⚡ Directo IP Cliente".
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="flex flex-wrap justify-center gap-2 pt-1">
+                  <button
+                    onClick={() => setStreamMode(m => m === 'PROXY' ? 'DIRECT' : 'PROXY')}
+                    className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold"
+                  >
+                    Probar en Modo {streamMode === 'PROXY' ? 'Directo IP Cliente' : 'Proxy Hostinger'}
+                  </button>
+                  {item?.type === 'LIVE' && (
+                    <button
+                      onClick={() => setLiveFormat(f => f === 'TS' ? 'HLS' : 'TS')}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700"
+                    >
+                      Cambiar a {liveFormat === 'TS' ? 'HLS (.m3u8)' : 'MPEG-TS (.ts)'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="p-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un canal o película'}</h3>
+              <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{item?.streamUrl}</p>
+            </div>
+            {probeInfo && !probeInfo.loading && (
+              <span className={`px-2.5 py-1 rounded text-[11px] font-bold ${probeInfo.status === 200 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                Estado Servidor: HTTP {probeInfo.status || 'Error'}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

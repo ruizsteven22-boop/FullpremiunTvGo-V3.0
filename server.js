@@ -515,7 +515,9 @@ http.createServer(async (req, res) => {
     return;
   }
 
+  // =========================================================================
   // 5. ENDPOINT PROXY DIRECTO (/proxy)
+  // =========================================================================
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.searchParams.get('url');
     if (!targetUrl) {
@@ -538,7 +540,9 @@ http.createServer(async (req, res) => {
         res.setHeader('content-type', 'video/mp2t');
       }
 
+      // Enviar paquetes al cliente sin delay TCP
       res.writeHead(proxyRes.statusCode);
+      if (req.socket) req.socket.setNoDelay(true);
       proxyRes.pipe(res);
 
       req.on('close', () => proxyReq.destroy());
@@ -550,7 +554,6 @@ http.createServer(async (req, res) => {
     }
     return;
   }
-
   // 6. SERVIR ARCHIVOS ESTÁTICOS Y PWA
   if (pathname === '/' || pathname === '/app' || pathname === '/admin') pathname = '/index.html';
   const filePath = path.join(__dirname, 'public', pathname);

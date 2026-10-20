@@ -1168,16 +1168,23 @@
         if (item.type === 'LIVE') {
           if (liveEngine === 'MSE' && window.mpegts && window.mpegts.isSupported()) {
             try {
-              const player = window.mpegts.createPlayer({
-                type: 'mse',
-                isLive: true,
-                url: directProxyUrl
-              }, {
-                enableWorker: true,
-                lazyLoad: false,
-                liveBufferLatencyChasing: true,
-                stashInitialSize: 128 * 1024
-              });
+              // POR ESTE BLOQUE OPTIMIZADO:
+        const player = window.mpegts.createPlayer({
+          type: 'mse',
+          isLive: true,
+          url: directProxyUrl
+        }, {
+          enableWorker: true,
+          lazyLoad: false,
+          enableStashBuffer: true,
+          stashInitialSize: 512 * 1024,          // Crea un colchón inicial de 512 KB antes de iniciar
+          liveBufferLatencyChasing: false,       // Desactiva la persecución agresiva que congela la imagen
+          autoCleanupSourceBuffer: true,         // Limpia fragmentos viejos de la RAM del teléfono
+          autoCleanupMaxBackwardDuration: 30,    // Mantiene solo 30s previos en memoria
+          autoCleanupMinBackwardDuration: 15,
+          maxBufferLength: 6,                    // Almacena hasta 6 segundos de anticipación
+          seekType: 'range'
+        });
 
               playerRef.current = player;
               player.attachMediaElement(video);

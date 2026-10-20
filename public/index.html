@@ -134,7 +134,7 @@
     function App() {
       const [deviceId] = useState(getOrCreateDeviceId);
       const [deviceAccess, setDeviceAccess] = useState({ allowed: true, status: 'TRIAL', daysLeft: 12 });
-      const [pricing, setPricing] = useState({ priceOfficialCLP: 4000, priceExternalCLP: 6000, whatsappNumber: '+56900000000', paymentInstructions: '' });
+      const [pricing, setPricing] = useState({ priceOfficialCLP: 4000, priceExternalCLP: 6000, whatsappNumber: '+56979429123', officialEmail: 'activaciones@app.fullpremiumtvcl.com' });
       const [exchange, setExchange] = useState({ rates: { CLP: 1, PEN: 0.00395, USD: 0.00105, EUR: 0.00097, ARS: 1.05, MXN: 0.021, COP: 4.45, BRL: 0.0059 } });
       const [selectedCurrency, setSelectedCurrency] = useState('CLP');
 
@@ -213,15 +213,15 @@
           await syncDeviceWithServer(clientTier, label, username);
 
           if (loginMode === 'CUSTOM_M3U') {
-            setLoadingStatus('Procesando lista M3U del cliente...');
+            setLoadingStatus('Procesando lista M3U...');
             let content = m3uRawText;
             if (!content && m3uUrlInput.trim()) {
               const res = await fetch(`/proxy?url=${encodeURIComponent(m3uUrlInput.trim())}`);
-              if (!res.ok) throw new Error('No se pudo descargar la lista M3U desde la URL indicada.');
+              if (!res.ok) throw new Error('No se pudo descargar la lista M3U.');
               content = await res.text();
             }
             if (!content || !content.includes('#EXTM3U')) {
-              throw new Error('El contenido o URL no es un archivo M3U válido.');
+              throw new Error('Archivo o URL M3U inválido.');
             }
             const parsed = parseM3uPlaylist(content);
             setCategories(parsed.categories);
@@ -239,13 +239,13 @@
             : customServerUrl.trim().replace(/\/+$/, '');
 
           if (!targetHost.startsWith('http')) {
-            throw new Error('La URL del servidor Xtream debe comenzar con http:// o https://');
+            throw new Error('La URL debe comenzar con http:// o https://');
           }
 
           setActiveServerHost(targetHost);
           const baseApi = `${targetHost}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}`;
 
-          setLoadingStatus('1/4 Sincronizando grupos y categorías...');
+          setLoadingStatus('1/4 Obteniendo grupos y categorías...');
           const [liveCats, vodCats, serCats] = await Promise.all([
             fetchJsonViaProxy(`${baseApi}&action=get_live_categories`).catch(() => []),
             fetchJsonViaProxy(`${baseApi}&action=get_vod_categories`).catch(() => []),
@@ -328,7 +328,7 @@
 
           setAuth(true);
         } catch (err) {
-          alert('Error al cargar lista o servidor: ' + err.message);
+          alert('Error de conexión: ' + err.message);
         } finally {
           setLoading(false);
           setLoadingStatus('');
@@ -435,13 +435,14 @@
 
       return (
         <div className="min-h-screen flex flex-col">
+          {/* BARRA SUPERIOR */}
           <header className="bg-[#0B0F19] border-b border-slate-800 px-4 lg:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center font-extrabold text-white text-lg shadow-lg">TV</div>
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.0 Stable</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.2 Online Pay</span>
                 </div>
                 <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
               </div>
@@ -469,8 +470,8 @@
                 {deviceAccess.status === 'LICENSED'
                   ? `✅ Licencia Activa (${deviceAccess.daysLeft} días)`
                   : deviceAccess.allowed
-                  ? `⏳ Prueba Gratis: ${deviceAccess.daysLeft} de 12 días`
-                  : '🔒 Prueba de 12 días vencida — Activar'}
+                  ? `⏳ Prueba: ${deviceAccess.daysLeft} de 12 días`
+                  : '🔒 Prueba vencida — Activar'}
               </button>
 
               <button
@@ -482,35 +483,36 @@
 
               {auth && (
                 <button onClick={() => setAuth(false)} className="px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/70 text-xs font-semibold text-rose-200 border border-rose-700/40">
-                  Cambiar Lista / Salir
+                  Salir
                 </button>
               )}
             </div>
           </header>
 
+          {/* CONTENEDOR CENTRAL */}
           <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 lg:p-6">
             {!deviceAccess.allowed ? (
               <div className="max-w-xl mx-auto mt-10 bg-[#0B0F19] border-2 border-rose-500/50 rounded-3xl p-8 shadow-2xl text-center space-y-5">
                 <div className="w-16 h-16 mx-auto rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-3xl">🔒</div>
                 <h2 className="text-2xl font-extrabold text-white">Periodo de Prueba de 12 Días Finalizado</h2>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  Tu dispositivo <strong className="text-violet-300 font-mono">{deviceId}</strong> ha completado los 12 días gratuitos de prueba de <strong>Full Premium TvGo</strong>. Para continuar disfrutando de la aplicación durante <strong>1 Año Completo (365 días)</strong>, adquiere y activa tu código de licencia.
+                  Tu dispositivo <strong className="text-violet-300 font-mono">{deviceId}</strong> ha completado los 12 días de prueba de <strong>Full Premium TvGo</strong>. Activa tu acceso por <strong>1 Año Completo</strong> mediante pago automático de Mercado Pago Chile o canjea tu código.
                 </p>
                 <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 text-left space-y-2 text-xs">
                   <div className="flex justify-between items-center">
                     <span className="text-slate-400">Clientes Oficiales Full Premium TvGo:</span>
-                    <span className="font-extrabold text-emerald-400 text-sm">${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP / Año ({formatConvertedPrice(pricing.priceOfficialCLP)})</span>
+                    <span className="font-extrabold text-emerald-400 text-sm">${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP / Año</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-400">Otros Clientes (Listas Externas M3U / Xtream):</span>
-                    <span className="font-extrabold text-amber-300 text-sm">${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP / Año ({formatConvertedPrice(pricing.priceExternalCLP)})</span>
+                    <span className="text-slate-400">Otros Clientes (Listas Externas):</span>
+                    <span className="font-extrabold text-amber-300 text-sm">${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP / Año</span>
                   </div>
                 </div>
                 <button
                   onClick={() => setShowLicenseModal(true)}
                   className="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-extrabold text-xs shadow-lg"
                 >
-                  🔑 Ingresar Código de Licencia o Ver Medios de Pago
+                  💳 Pagar Online con Mercado Pago o Activar Código
                 </button>
               </div>
             ) : !auth ? (
@@ -526,28 +528,28 @@
                     onClick={() => setLoginMode('OFFICIAL')}
                     className={`py-2 px-2 rounded-xl transition ${loginMode === 'OFFICIAL' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
                   >
-                    ⭐ Cliente Full Premium
+                    ⭐ Oficial
                   </button>
                   <button
                     type="button"
                     onClick={() => setLoginMode('CUSTOM_XTREAM')}
                     className={`py-2 px-2 rounded-xl transition ${loginMode === 'CUSTOM_XTREAM' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
                   >
-                    🌐 Xtream Propio
+                    🌐 Xtream
                   </button>
                   <button
                     type="button"
                     onClick={() => setLoginMode('CUSTOM_M3U')}
                     className={`py-2 px-2 rounded-xl transition ${loginMode === 'CUSTOM_M3U' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
                   >
-                    📂 Subir Lista M3U
+                    📂 Lista M3U
                   </button>
                 </div>
 
                 <form onSubmit={handleLogin} className="space-y-4">
                   {loginMode === 'CUSTOM_XTREAM' && (
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">URL del Servidor Xtream (Host:Puerto)</label>
+                      <label className="block text-xs text-slate-300 mb-1">URL Servidor Xtream (Host:Puerto)</label>
                       <input
                         type="url"
                         placeholder="http://ejemplo.com:8080"
@@ -585,7 +587,7 @@
                   ) : (
                     <>
                       <div>
-                        <label className="block text-xs text-slate-300 mb-1">Pegar URL de Lista M3U / M3U8</label>
+                        <label className="block text-xs text-slate-300 mb-1">URL de Lista M3U / M3U8</label>
                         <input
                           type="url"
                           placeholder="http://servidor.com/get.php?username=...&type=m3u_plus"
@@ -594,32 +596,25 @@
                           className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
                         />
                       </div>
-                      <div className="text-center text-[11px] text-slate-500">o también puedes subir tu archivo .M3U local</div>
                       <div>
                         <label className="block w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-dashed border-violet-500/50 text-center text-xs text-violet-300 font-semibold cursor-pointer hover:bg-slate-800/60">
-                          📁 Seleccionar archivo .M3U / .M3U8 desde tu equipo
+                          📁 Seleccionar archivo .M3U local
                           <input type="file" accept=".m3u,.m3u8,.txt" onChange={handleM3uFileUpload} className="hidden" />
                         </label>
                         {m3uRawText && (
-                          <p className="text-[11px] text-emerald-400 mt-1 text-center">✔ Archivo M3U cargado y listo ({m3uRawText.length} caracteres)</p>
+                          <p className="text-[11px] text-emerald-400 mt-1 text-center">✔ Archivo M3U cargado</p>
                         )}
                       </div>
                     </>
                   )}
 
                   <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300 flex items-center justify-between">
-                    <span>
-                      {loginMode === 'OFFICIAL'
-                        ? 'Tarifa Licencia Anual Cliente Oficial:'
-                        : 'Tarifa Licencia Anual Lista Externa:'}
-                    </span>
-                    <strong className="text-emerald-400">
-                      ${applicableClpPrice.toLocaleString('es-CL')} CLP / Año
-                    </strong>
+                    <span>Tarifa anual:</span>
+                    <strong className="text-emerald-400">${applicableClpPrice.toLocaleString('es-CL')} CLP / Año</strong>
                   </div>
 
                   <button type="submit" disabled={loading} className="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg disabled:opacity-50 transition">
-                    {loading ? loadingStatus : 'Iniciar Reproductor Full Premium TvGo'}
+                    {loading ? loadingStatus : 'Entrar a Full Premium TvGo'}
                   </button>
                 </form>
               </div>
@@ -636,7 +631,7 @@
                   </div>
 
                   <div className="mb-3">
-                    <input type="text" placeholder={`Buscar en ${activeTab === 'LIVE' ? 'TV en Vivo' : activeTab === 'MOVIES' ? 'Películas' : 'Series'}...`} value={search} onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }} className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" />
+                    <input type="text" placeholder={`Buscar...`} value={search} onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }} className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" />
                   </div>
 
                   {activeTab === 'SERIES' && (loadingSeriesInfo || seriesEpisodes.length > 0) && (
@@ -650,18 +645,48 @@
                     </div>
                   )}
 
-                  <div key={activeTab + '-' + selectedCategory} className="flex-1 overflow-y-auto divide-y divide-slate-800/60 pr-1">
-                    {visibleItems.map(item => (
-                      <div key={item.id} onClick={() => handleSelectItem(item)} className={`p-3 rounded-xl cursor-pointer transition flex items-center justify-between gap-2 ${activeItem?.id === item.id ? 'bg-violet-600/20 border border-violet-500/40 text-white' : 'hover:bg-slate-800/50 text-slate-300'}`}>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold truncate">{item.title}</div>
-                          <div className="text-[10px] text-violet-300/80 truncate">📁 {item.categoryName}</div>
-                        </div>
-                        <span className="px-2.5 py-1 rounded-lg bg-violet-600/30 text-violet-200 text-[10px] font-semibold shrink-0">{item.type === 'SERIE' ? 'Capítulos' : 'Ver'}</span>
+                  {/* VISTA EN LISTA PARA CANALES EN VIVO, Y EN CUADRÍCULA (POSTERS) PARA PELÍCULAS Y SERIES */}
+                  <div key={activeTab + '-' + selectedCategory} className="flex-1 overflow-y-auto pr-1">
+                    {activeTab === 'LIVE' ? (
+                      <div className="divide-y divide-slate-800/60">
+                        {visibleItems.map(item => (
+                          <div key={item.id} onClick={() => handleSelectItem(item)} className={`p-3 rounded-xl cursor-pointer transition flex items-center justify-between gap-2 ${activeItem?.id === item.id ? 'bg-violet-600/20 border border-violet-500/40 text-white' : 'hover:bg-slate-800/50 text-slate-300'}`}>
+                            <div className="min-w-0">
+                              <div className="text-xs font-bold truncate">{item.title}</div>
+                              <div className="text-[10px] text-violet-300/80 truncate">📁 {item.categoryName}</div>
+                            </div>
+                            <span className="px-2.5 py-1 rounded-lg bg-violet-600/30 text-violet-200 text-[10px] font-semibold shrink-0">Ver</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                        {visibleItems.map(item => (
+                          <div
+                            key={item.id}
+                            onClick={() => handleSelectItem(item)}
+                            className={`group relative rounded-xl overflow-hidden cursor-pointer border transition transform hover:scale-[1.02] ${activeItem?.id === item.id ? 'border-violet-500 shadow-lg shadow-violet-500/20' : 'border-slate-800 hover:border-slate-600'}`}
+                          >
+                            <div className="aspect-[2/3] bg-slate-900 overflow-hidden relative">
+                              {item.logo ? (
+                                <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:opacity-80 transition" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-700">🎬</div>
+                              )}
+                              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent flex flex-col justify-end p-2">
+                                <div className="text-[11px] font-bold text-white line-clamp-2 leading-tight">{item.title}</div>
+                                <div className="text-[9px] text-violet-300 truncate mt-0.5">{item.categoryName}</div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {visibleItems.length < filteredItems.length && (
-                      <button onClick={() => setVisibleLimit(prev => prev + 100)} className="w-full py-2.5 mt-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-violet-300">Cargar 100 más</button>
+                      <button onClick={() => setVisibleLimit(prev => prev + 60)} className="w-full py-2.5 mt-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-violet-300">
+                        Cargar más contenidos...
+                      </button>
                     )}
                   </div>
                 </div>
@@ -673,6 +698,7 @@
             )}
           </main>
 
+          {/* MODAL DE ACTIVACIÓN Y PAGO ONLINE CON MERCADO PAGO CHILE */}
           {showLicenseModal && (
             <LicenseModal
               deviceId={deviceId}
@@ -682,6 +708,7 @@
               selectedCurrency={selectedCurrency}
               setSelectedCurrency={setSelectedCurrency}
               formatConvertedPrice={formatConvertedPrice}
+              loginMode={loginMode}
               onClose={() => setShowLicenseModal(false)}
               onActivated={(newAccess) => {
                 setDeviceAccess(newAccess);
@@ -690,6 +717,7 @@
             />
           )}
 
+          {/* MODAL DE INSTALACIÓN EN PLATAFORMAS */}
           {showAppsModal && (
             <PlatformsModal
               deferredPwaPrompt={deferredPwaPrompt}
@@ -700,6 +728,9 @@
       );
     }
 
+    // ========================================================================
+    // MODAL DE LICENCIA CON BOTONES DIRECTOS DE MERCADO PAGO CHILE
+    // ========================================================================
     function LicenseModal({
       deviceId,
       deviceAccess,
@@ -708,12 +739,36 @@
       selectedCurrency,
       setSelectedCurrency,
       formatConvertedPrice,
+      loginMode,
       onClose,
       onActivated
     }) {
       const [licenseInput, setLicenseInput] = useState('');
       const [activating, setActivating] = useState(false);
+      const [payingOnline, setPayingOnline] = useState(false);
       const [feedback, setFeedback] = useState('');
+
+      const handlePayWithMercadoPago = async (tierToPay) => {
+        setPayingOnline(true);
+        setFeedback('');
+        try {
+          const res = await fetch('/api/payment/create-preference', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId, tier: tierToPay })
+          });
+          const data = await res.json();
+          if (data.init_point) {
+            window.location.href = data.init_point;
+          } else {
+            throw new Error(data.error || 'No se pudo generar el enlace de Mercado Pago');
+          }
+        } catch (err) {
+          setFeedback(err.message);
+        } finally {
+          setPayingOnline(false);
+        }
+      };
 
       const handleActivate = async (e) => {
         e.preventDefault();
@@ -726,7 +781,7 @@
             body: JSON.stringify({ deviceId, code: licenseInput })
           });
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Error al validar licencia');
+          if (!res.ok) throw new Error(data.error || 'Código incorrecto');
           alert(data.message);
           onActivated(data.access);
         } catch (err) {
@@ -748,81 +803,120 @@
       ];
 
       return (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 lg:p-8 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 lg:p-8 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto">
+            {/* ENCABEZADO */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
-                <h3 className="text-lg font-extrabold text-white">Licencia Anual & Estado de Prueba</h3>
-                <p className="text-xs text-slate-400">ID de tu Dispositivo: <strong className="text-violet-300 font-mono">{deviceId}</strong></p>
+                <h3 className="text-lg font-extrabold text-white">Activar Licencia Anual (365 Días)</h3>
+                <p className="text-xs text-slate-400">ID Dispositivo: <strong className="text-violet-300 font-mono">{deviceId}</strong></p>
               </div>
-              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold">✕ Cerrar</button>
+              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700 transition">✕ Cerrar</button>
             </div>
 
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-300">Ver precios en tu moneda:</span>
-                <select
-                  value={selectedCurrency}
-                  onChange={e => setSelectedCurrency(e.target.value)}
-                  className="px-3 py-1.5 rounded-xl bg-slate-900 border border-violet-500/40 text-xs text-white font-bold"
+            {/* SELECTOR DE MONEDA DE REFERENCIA */}
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-300">Moneda de referencia:</span>
+              <select
+                value={selectedCurrency}
+                onChange={e => setSelectedCurrency(e.target.value)}
+                className="px-3 py-1.5 rounded-xl bg-slate-900 border border-violet-500/40 text-white font-bold"
+              >
+                {currencies.map(c => (
+                  <option key={c.code} value={c.code}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* TARJETAS DE PAGO CON BOTONES DIRECTOS DE MERCADO PAGO */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Tarjeta 1: Clientes Oficiales */}
+              <div className="p-4 rounded-2xl bg-violet-950/40 border border-violet-500/50 space-y-3 flex flex-col justify-between">
+                <div>
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-violet-600 text-white">Cliente Oficial Full Premium</span>
+                  <div className="text-xl font-extrabold text-white pt-1.5">
+                    {formatConvertedPrice(pricing.priceOfficialCLP)} <span className="text-xs font-normal text-slate-400">/ Año</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Precio base: ${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP anuales</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handlePayWithMercadoPago('OFFICIAL')}
+                  disabled={payingOnline}
+                  className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-extrabold text-xs shadow-lg transition flex items-center justify-center gap-1.5 disabled:opacity-50"
                 >
-                  {currencies.map(c => (
-                    <option key={c.code} value={c.code}>{c.name}</option>
-                  ))}
-                </select>
+                  <span>💳 Pagar $4.000 CLP</span>
+                </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-4 rounded-2xl bg-violet-950/30 border border-violet-500/40 space-y-1">
-                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-violet-600 text-white">Clientes Full Premium TvGo</span>
-                  <div className="text-xl font-extrabold text-white pt-1">
-                    {formatConvertedPrice(pricing.priceOfficialCLP)} <span className="text-xs font-normal text-slate-400">/ 1 Año</span>
+              {/* Tarjeta 2: Clientes con lista propia */}
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-700 space-y-3 flex flex-col justify-between">
+                <div>
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">Cliente Lista Propia (M3U / Xtream)</span>
+                  <div className="text-xl font-extrabold text-white pt-1.5">
+                    {formatConvertedPrice(pricing.priceExternalCLP)} <span className="text-xs font-normal text-slate-400">/ Año</span>
                   </div>
-                  <p className="text-[11px] text-slate-400">Precio base: ${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP anuales</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Precio base: ${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP anuales</p>
                 </div>
-
-                <div className="p-4 rounded-2xl bg-slate-900 border border-slate-700 space-y-1">
-                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">Otros Clientes (Listas Propias)</span>
-                  <div className="text-xl font-extrabold text-white pt-1">
-                    {formatConvertedPrice(pricing.priceExternalCLP)} <span className="text-xs font-normal text-slate-400">/ 1 Año</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400">Precio base: ${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP anuales</p>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => handlePayWithMercadoPago('EXTERNAL')}
+                  disabled={payingOnline}
+                  className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs shadow-lg transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <span>💳 Pagar $6.000 CLP</span>
+                </button>
               </div>
             </div>
 
-            <form onSubmit={handleActivate} className="space-y-3 pt-2 border-t border-slate-800">
-              <label className="block text-xs font-bold text-slate-200">¿Ya realizaste el pago? Ingresa tu Código de Licencia Anual:</label>
+            {/* AVISO DE MEDIOS DE PAGO ACEPTADOS */}
+            <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
+              <div className="text-xs font-bold text-sky-400">⚡ Pasarela Segura Mercado Pago Chile</div>
+              <div className="text-[11px] text-slate-300">
+                Paga con <strong>Webpay Plus</strong>, <strong>CuentaRUT</strong>, <strong>Tarjeta de Débito</strong> o <strong>Crédito</strong>.
+              </div>
+              <div className="text-[10px] text-emerald-400 font-semibold">
+                ✔ Tu aplicación se activa al instante en este dispositivo una vez confirmado el pago.
+              </div>
+            </div>
+
+            {feedback && (
+              <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs text-center font-medium">
+                {feedback}
+              </div>
+            )}
+
+            {/* CASILLA DE CÓDIGO MANUAL */}
+            <form onSubmit={handleActivate} className="space-y-2 pt-3 border-t border-slate-800">
+              <label className="block text-xs font-bold text-slate-300">¿Ya tienes un código generado previamente?</label>
               <div className="flex gap-2">
                 <input
                   type="text"
                   placeholder="Ej: FP4K-8A9F-2C1D"
                   value={licenseInput}
                   onChange={e => setLicenseInput(e.target.value)}
-                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white"
+                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white focus:outline-none focus:border-violet-500"
                   required
                 />
                 <button
                   type="submit"
                   disabled={activating}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg"
+                  className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 transition"
                 >
-                  {activating ? 'Validando...' : 'Activar 1 Año'}
+                  {activating ? 'Validando...' : 'Canjear'}
                 </button>
               </div>
-              {feedback && <p className="text-xs text-rose-400 font-semibold">{feedback}</p>}
             </form>
 
-            <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
-              <div className="font-bold text-white">Medios de Pago Autorizados:</div>
-              <p className="text-slate-400">{pricing.paymentInstructions}</p>
+            {/* CANAL DE WHATSAPP DIRECTO */}
+            <div className="pt-2 text-center">
               <a
-                href={`https://wa.me/${pricing.whatsappNumber.replace(/\D/g, '')}?text=${encodeURIComponent(`Hola! Quiero adquirir la licencia anual de Full Premium TvGo para mi Dispositivo ID: ${deviceId}`)}`}
+                href={`https://wa.me/56979429123?text=${encodeURIComponent(`Hola! Quiero consultar por la activación de Full Premium TvGo para mi Dispositivo ID: ${deviceId}`)}`}
                 target="_blank"
                 rel="noreferrer"
-                className="block w-full text-center py-2.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-bold"
+                className="text-xs text-slate-400 hover:text-emerald-400 transition"
               >
-                💬 Solicitar Código de Licencia por WhatsApp ({pricing.whatsappNumber})
+                💬 ¿Problemas para pagar? Escríbenos por WhatsApp: <strong className="text-white">+56979429123</strong>
               </a>
             </div>
           </div>
@@ -836,7 +930,7 @@
           deferredPwaPrompt.prompt();
           await deferredPwaPrompt.userChoice;
         } else {
-          alert('Para instalar directamente: En Chrome/Edge o Android pulsa el menú del navegador (⋮) y selecciona "Instalar aplicación" o "Agregar a pantalla de inicio".');
+          alert('Para instalar: En Chrome/Edge o Android pulsa el menú (⋮) y elige "Instalar aplicación" o "Agregar a pantalla principal".');
         }
       };
 
@@ -844,20 +938,20 @@
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 shadow-2xl space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-lg font-extrabold text-white">📲 Descargar Full Premium TvGo en tus Dispositivos</h3>
+              <h3 className="text-lg font-extrabold text-white">📲 Descargar Full Premium TvGo</h3>
               <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold">✕</button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
-                <div className="font-bold text-white text-sm">📱 Android / Android TV / Fire TV</div>
-                <p className="text-slate-400">Instala la WebApp (PWA) sin ocupar espacio o instala el archivo APK descargado.</p>
-                <button onClick={handleInstallPwa} className="w-full py-2 rounded-xl bg-violet-600 text-white font-bold">Instalar App en este Dispositivo</button>
+                <div className="font-bold text-white text-sm">📱 Android / Smart TV / TV Box</div>
+                <p className="text-slate-400">Instala la WebApp sin ocupar almacenamiento o instala el paquete APK.</p>
+                <button onClick={handleInstallPwa} className="w-full py-2 rounded-xl bg-violet-600 text-white font-bold">Instalar en este Dispositivo</button>
               </div>
 
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
-                <div className="font-bold text-white text-sm">💻 Windows / Mac / Smart TV</div>
-                <p className="text-slate-400">En Windows/Mac haz clic en el ícono de instalación de la barra de direcciones de Chrome/Edge.</p>
+                <div className="font-bold text-white text-sm">💻 Windows / Mac</div>
+                <p className="text-slate-400">Haz clic en el ícono de instalación en la barra superior de Chrome o Edge.</p>
                 <button onClick={handleInstallPwa} className="w-full py-2 rounded-xl bg-indigo-600 text-white font-bold">Crear Acceso Directo</button>
               </div>
             </div>
@@ -874,9 +968,8 @@
       const [liveEngine, setLiveEngine] = useState('MSE');
 
       const [audioTracks, setAudioTracks] = useState([
-        { index: 0, label: 'Pista 1 — Español / Principal (Por defecto)' },
-        { index: 1, label: 'Pista 2 — Inglés / Audio Original (Dual)' },
-        { index: 2, label: 'Pista 3 — Audio Alternativo' }
+        { index: 0, label: 'Pista 1 — Principal' },
+        { index: 1, label: 'Pista 2 — Secundario' }
       ]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
       const [useServerAudioSwitch, setUseServerAudioSwitch] = useState(false);
@@ -924,7 +1017,6 @@
         if (item.type === 'LIVE') {
           if (liveEngine === 'MSE' && window.mpegts && window.mpegts.isSupported()) {
             try {
-              // BÚFER ELÁSTICO OPTIMIZADO PARA STREAMING MÓVIL Y ESTABILIDAD
               const player = window.mpegts.createPlayer({
                 type: 'mse',
                 isLive: true,
@@ -973,7 +1065,7 @@
                 const t = video.audioTracks[i];
                 detected.push({
                   index: i,
-                  label: `Pista ${i + 1} — ${t.label || t.language || (i === 0 ? 'Español / Principal' : 'Inglés / Original')}`
+                  label: `Pista ${i + 1} — ${t.label || t.language || (i === 0 ? 'Español' : 'Inglés')}`
                 });
               }
               setAudioTracks(detected);
@@ -997,7 +1089,7 @@
         setSelectedAudioTrack(idx);
         const video = videoRef.current;
 
-        if (video && video.audioTracks && video.audioTracks.length > 1 && !useServerAudioSwitch) {
+        if (video?.audioTracks && video.audioTracks.length > 1 && !useServerAudioSwitch) {
           for (let i = 0; i < video.audioTracks.length; i++) {
             video.audioTracks[i].enabled = (i === idx);
           }
@@ -1009,7 +1101,7 @@
       const handleSubtitleChange = (subId) => {
         setActiveSubtitle(subId);
         const video = videoRef.current;
-        if (!video || !video.textTracks) return;
+        if (!video?.textTracks) return;
         for (let i = 0; i < video.textTracks.length; i++) {
           const track = video.textTracks[i];
           track.mode = (subId !== 'OFF' && track.label === subId) ? 'showing' : 'disabled';
@@ -1043,20 +1135,20 @@
                 <div className="flex items-center gap-2">
                   <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">EN VIVO</span>
                   <span className="text-slate-300 font-medium">
-                    Motor: <strong className="text-violet-300">{liveEngine === 'MSE' ? 'MPEG-TS Estable' : 'FFmpeg HD/FHD Compatible'}</strong>
+                    Motor: <strong className="text-violet-300">{liveEngine === 'MSE' ? 'MPEG-TS Estable' : 'FFmpeg HD/FHD'}</strong>
                   </span>
                 </div>
                 <button
                   onClick={() => setLiveEngine(e => e === 'MSE' ? 'FFMPEG_HD' : 'MSE')}
                   className={`px-3 py-1.5 rounded-xl font-bold transition shadow ${liveEngine === 'FFMPEG_HD' ? 'bg-amber-500 text-slate-950' : 'bg-violet-600 hover:bg-violet-500 text-white'}`}
                 >
-                  {liveEngine === 'MSE' ? '🔧 Reparar Canal HD/FHD (Audio/Imagen)' : '⚡ Volver a Modo Rápido'}
+                  {liveEngine === 'MSE' ? '🔧 Reparar Canal HD/FHD' : '⚡ Modo Rápido'}
                 </button>
               </div>
             ) : isVod ? (
               <div className="flex flex-wrap items-center gap-3 w-full">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-violet-300 font-bold">🔊 Idioma Audio:</span>
+                  <span className="text-violet-300 font-bold">🔊 Audio:</span>
                   <select
                     value={selectedAudioTrack}
                     onChange={(e) => handleAudioChange(e.target.value)}
@@ -1102,20 +1194,20 @@
             {status === 'LOADING' && (
               <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                <span className="text-xs text-violet-300 font-semibold">Conectando flujo: {item?.title}</span>
+                <span className="text-xs text-violet-300 font-semibold">Cargando: {item?.title}</span>
               </div>
             )}
 
             {status === 'ERROR' && (
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3">
-                <p className="text-amber-400 font-bold text-sm">El canal o archivo requiere decodificación asistida</p>
+                <p className="text-amber-400 font-bold text-sm">Decodificación asistida requerida</p>
                 {item?.type === 'LIVE' ? (
-                  <button onClick={() => setLiveEngine('FFMPEG_HD')} className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg">
-                    🔧 Activar Decodificador HD/FHD en Servidor
+                  <button onClick={() => setLiveEngine('FFMPEG_HD')} className="px-4 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold">
+                    🔧 Activar Decodificador HD/FHD
                   </button>
                 ) : (
-                  <button onClick={() => setUseServerAudioSwitch(true)} className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg">
-                    🔧 Reproducir con Decodificador Multi-Audio
+                  <button onClick={() => setUseServerAudioSwitch(true)} className="px-4 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold">
+                    🔧 Reproducir con Multi-Audio
                   </button>
                 )}
               </div>
@@ -1123,7 +1215,7 @@
           </div>
 
           <div className="p-4 border-t border-slate-800">
-            <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un canal, película o serie'}</h3>
+            <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un contenido'}</h3>
             <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{item?.streamUrl}</p>
           </div>
         </div>

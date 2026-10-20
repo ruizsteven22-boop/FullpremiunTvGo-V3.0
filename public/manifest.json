@@ -1,13 +1,21 @@
 {
-  "name": "Full Premium TvGo — Plataforma OTT",
-  "short_name": "FullPremiumTvGo",
-  "description": "Televisión en vivo, Películas y Series Multiplataforma",
+  "name": "Full Premium TvGo",
+  "short_name": "TvGo",
+  "description": "Plataforma OTT Oficial - Television en vivo, Peliculas y Series",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "landscape",
   "background_color": "#05070D",
   "theme_color": "#7C3AED",
   "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2989/2989835.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
     {
       "src": "https://cdn-icons-png.flaticon.com/512/2989/2989835.png",
       "sizes": "512x512",

@@ -2,8 +2,12 @@
 <html lang="es" class="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Full Premium TvGo v4.0 — Plataforma OTT Oficial</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Full Premium TvGo v5.0 — Plataforma OTT Multiplataforma</title>
+  <meta name="theme-color" content="#0B0F19" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="/manifest.json" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -16,9 +20,20 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useMemo } = React;
 
-    const SERVER_HOST = 'http://st.xn--aejo-gqa.de:80';
+    const OFFICIAL_SERVER_HOST = 'http://st.xn--aejo-gqa.de:80';
 
-    // Convierte subtítulos .SRT a formato WebVTT para que el navegador los muestre en pantalla
+    // Generar o recuperar el ID único del dispositivo del cliente
+    function getOrCreateDeviceId() {
+      let id = localStorage.getItem('tvgo_device_id');
+      if (!id) {
+        const rand = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+        id = `TVGO-${rand()}-${rand()}`;
+        localStorage.setItem('tvgo_device_id', id);
+      }
+      return id;
+    }
+
+    // Convertir subtítulos .SRT a WebVTT
     function srtToVtt(srtText) {
       const cleaned = srtText
         .replace(/\r+/g, '')
@@ -27,12 +42,118 @@
       return 'WEBVTT\n\n' + cleaned;
     }
 
+    // Parser de listas M3U / M3U8 subidas por el cliente
+    function parseM3uPlaylist(m3uContent) {
+      const lines = m3uContent.split(/\r?\n/);
+      const live = [];
+      const movies = [];
+      const series = [];
+      const liveCats = new Set();
+      const movieCats = new Set();
+      const seriesCats = new Set();
+
+      let currentMeta = null;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        if (line.startsWith('#EXTINF:')) {
+          const groupMatch = line.match(/group-title="([^"]+)"/i);
+          const logoMatch = line.match(/tvg-logo="([^"]+)"/i);
+          const commaIndex = line.lastIndexOf(',');
+          const title = commaIndex !== -1 ? line.slice(commaIndex + 1).trim() : 'Canal / Contenido';
+          const group = groupMatch ? groupMatch[1].trim() : 'General';
+          const logo = logoMatch ? logoMatch[1].trim() : '';
+          currentMeta = { title, group, logo };
+        } else if (!line.startsWith('#') && currentMeta) {
+          const url = line;
+          const lowerUrl = url.toLowerCase();
+          const lowerTitle = currentMeta.title.toLowerCase();
+          const lowerGroup = currentMeta.group.toLowerCase();
+
+          const isMovieFile = lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.mkv') || lowerUrl.endsWith('.avi');
+          const isSeriePattern = /s\d{1,2}[\s._-]?e\d{1,2}|temporada|capitulo|episodio/i.test(lowerTitle) || lowerGroup.includes('serie');
+
+          if (isSeriePattern && isMovieFile) {
+            seriesCats.add(currentMeta.group);
+            series.push({
+              type: 'MOVIE', // Reproduce directo el episodio M3U
+              id: `m3u-ser-${series.length}`,
+              title: currentMeta.title,
+              logo: currentMeta.logo,
+              ext: lowerUrl.endsWith('.mkv') ? 'mkv' : 'mp4',
+              categoryId: currentMeta.group,
+              categoryName: currentMeta.group,
+              streamUrl: url
+            });
+          } else if (isMovieFile || lowerGroup.includes('pelicula') || lowerGroup.includes('vod') || lowerGroup.includes('cine')) {
+            movieCats.add(currentMeta.group);
+            movies.push({
+              type: 'MOVIE',
+              id: `m3u-mov-${movies.length}`,
+              title: currentMeta.title,
+              logo: currentMeta.logo,
+              ext: lowerUrl.endsWith('.mkv') ? 'mkv' : 'mp4',
+              categoryId: currentMeta.group,
+              categoryName: currentMeta.group,
+              streamUrl: url
+            });
+          } else {
+            liveCats.add(currentMeta.group);
+            live.push({
+              type: 'LIVE',
+              id: `m3u-live-${live.length}`,
+              title: currentMeta.title,
+              logo: currentMeta.logo,
+              categoryId: currentMeta.group,
+              categoryName: currentMeta.group,
+              streamUrl: url
+            });
+          }
+          currentMeta = null;
+        }
+      }
+
+      return {
+        live,
+        movies,
+        series,
+        categories: {
+          LIVE: Array.from(liveCats).map(g => ({ category_id: g, category_name: g })),
+          MOVIES: Array.from(movieCats).map(g => ({ category_id: g, category_name: g })),
+          SERIES: Array.from(seriesCats).map(g => ({ category_id: g, category_name: g }))
+        }
+      };
+    }
+
     function App() {
-      const [auth, setAuth] = useState(false);
+      const [deviceId] = useState(getOrCreateDeviceId);
+      const [deviceAccess, setDeviceAccess] = useState({ allowed: true, status: 'TRIAL', daysLeft: 12 });
+      const [pricing, setPricing] = useState({ priceOfficialCLP: 4000, priceExternalCLP: 6000, whatsappNumber: '+56900000000', paymentInstructions: '' });
+      const [exchange, setExchange] = useState({ rates: { CLP: 1, PEN: 0.00395, USD: 0.00105, EUR: 0.00097, ARS: 1.05, MXN: 0.021, COP: 4.45, BRL: 0.0059 } });
+      const [selectedCurrency, setSelectedCurrency] = useState('CLP');
+
+      // Modales Superiores
+      const [showLicenseModal, setShowLicenseModal] = useState(false);
+      const [showAdminModal, setShowAdminModal] = useState(window.location.pathname === '/admin');
+      const [showAppsModal, setShowAppsModal] = useState(false);
+      const [deferredPwaPrompt, setDeferredPwaPrompt] = useState(null);
+
+      // Tipo de conexión elegida por el usuario en Login:
+      // 'OFFICIAL' (Full Premium TvGo - $4000 CLP)
+      // 'CUSTOM_XTREAM' (Otro servidor Xtream - $6000 CLP)
+      // 'CUSTOM_M3U' (URL M3U o Archivo M3U - $6000 CLP)
+      const [loginMode, setLoginMode] = useState('OFFICIAL');
+      const [activeServerHost, setActiveServerHost] = useState(OFFICIAL_SERVER_HOST);
+      const [customServerUrl, setCustomServerUrl] = useState('');
       const [username, setUsername] = useState('MarcoRomero');
       const [password, setPassword] = useState('ZLK1oAddlk');
+      const [m3uUrlInput, setM3uUrlInput] = useState('');
+      const [m3uRawText, setM3uRawText] = useState('');
 
-      const [activeTab, setActiveTab] = useState('LIVE'); // 'LIVE' | 'MOVIES' | 'SERIES'
+      const [auth, setAuth] = useState(false);
+      const [activeTab, setActiveTab] = useState('LIVE');
       const [categories, setCategories] = useState({ LIVE: [], MOVIES: [], SERIES: [] });
       const [selectedCategory, setSelectedCategory] = useState('ALL');
 
@@ -49,17 +170,86 @@
       const [loading, setLoading] = useState(false);
       const [loadingStatus, setLoadingStatus] = useState('');
 
+      // Sincronizar estado de prueba de 12 días y precios al iniciar
+      const syncDeviceWithServer = async (clientTypeOverride, providerLabelOverride, userOverride) => {
+        try {
+          const res = await fetch('/api/device/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              deviceId,
+              clientType: clientTypeOverride,
+              providerLabel: providerLabelOverride,
+              username: userOverride
+            })
+          });
+          const data = await res.json();
+          if (data.access) setDeviceAccess(data.access);
+          if (data.pricing) setPricing(data.pricing);
+          if (data.exchange) setExchange(data.exchange);
+        } catch (_) {}
+      };
+
+      useEffect(() => {
+        syncDeviceWithServer();
+        window.addEventListener('beforeinstallprompt', (e) => {
+          e.preventDefault();
+          setDeferredPwaPrompt(e);
+        });
+      }, []);
+
       const fetchJsonViaProxy = async (actionUrl) => {
         const res = await fetch(`/proxy?url=${encodeURIComponent(actionUrl)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       };
 
+      // Manejo de Login (Oficial, Xtream Propio o Lista M3U)
       const handleLogin = async (e) => {
         e.preventDefault();
         setLoading(true);
+
         try {
-          const baseApi = `${SERVER_HOST}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}`;
+          const isOfficial = loginMode === 'OFFICIAL';
+          const clientTier = isOfficial ? 'OFFICIAL' : 'EXTERNAL';
+          const label = isOfficial ? 'Full Premium TvGo Oficial' : (loginMode === 'CUSTOM_XTREAM' ? customServerUrl : 'Lista M3U Propia');
+
+          await syncDeviceWithServer(clientTier, label, username);
+
+          // OPCIÓN C: Lista M3U por URL o Archivo
+          if (loginMode === 'CUSTOM_M3U') {
+            setLoadingStatus('Procesando lista M3U del cliente...');
+            let content = m3uRawText;
+            if (!content && m3uUrlInput.trim()) {
+              const res = await fetch(`/proxy?url=${encodeURIComponent(m3uUrlInput.trim())}`);
+              if (!res.ok) throw new Error('No se pudo descargar la lista M3U desde la URL indicada.');
+              content = await res.text();
+            }
+            if (!content || !content.includes('#EXTM3U')) {
+              throw new Error('El contenido o URL no es un archivo M3U válido.');
+            }
+            const parsed = parseM3uPlaylist(content);
+            setCategories(parsed.categories);
+            setLiveCatalog(parsed.live);
+            setMoviesCatalog(parsed.movies);
+            setSeriesCatalog(parsed.series);
+            if (parsed.live.length > 0) setActiveItem(parsed.live[0]);
+            else if (parsed.movies.length > 0) setActiveItem(parsed.movies[0]);
+            setAuth(true);
+            return;
+          }
+
+          // OPCIÓN A (Oficial) u OPCIÓN B (Xtream Propio del cliente)
+          const targetHost = isOfficial
+            ? OFFICIAL_SERVER_HOST
+            : customServerUrl.trim().replace(/\/+$/, '');
+
+          if (!targetHost.startsWith('http')) {
+            throw new Error('La URL del servidor Xtream debe comenzar con http:// o https://');
+          }
+
+          setActiveServerHost(targetHost);
+          const baseApi = `${targetHost}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}`;
 
           setLoadingStatus('1/4 Sincronizando grupos y categorías...');
           const [liveCats, vodCats, serCats] = await Promise.all([
@@ -95,7 +285,7 @@
                 logo: ch.stream_icon || '',
                 categoryId: catId,
                 categoryName: liveCatMap[catId] || 'TV en Vivo',
-                streamUrl: `${SERVER_HOST}/live/${username}/${password}/${ch.stream_id}.ts`
+                streamUrl: `${targetHost}/live/${username}/${password}/${ch.stream_id}.ts`
               };
             });
             setLiveCatalog(mappedLive);
@@ -117,7 +307,7 @@
                 ext,
                 categoryId: catId,
                 categoryName: vodCatMap[catId] || 'Películas',
-                streamUrl: `${SERVER_HOST}/movie/${username}/${password}/${m.stream_id}.${ext}`
+                streamUrl: `${targetHost}/movie/${username}/${password}/${m.stream_id}.${ext}`
               };
             });
             setMoviesCatalog(mappedMovies);
@@ -144,19 +334,33 @@
 
           setAuth(true);
         } catch (err) {
-          alert('Error al conectar con el servidor Xtream: ' + err.message);
+          alert('Error al cargar lista o servidor: ' + err.message);
         } finally {
           setLoading(false);
           setLoadingStatus('');
         }
       };
 
+      const handleM3uFileUpload = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setM3uRawText(String(ev.target?.result || ''));
+        };
+        reader.readAsText(file);
+      };
+
       const handleSelectItem = async (item) => {
+        if (!deviceAccess.allowed) {
+          setShowLicenseModal(true);
+          return;
+        }
         if (item.type === 'SERIE' && item.seriesId) {
           setLoadingSeriesInfo(true);
           setSeriesEpisodes([]);
           try {
-            const infoUrl = `${SERVER_HOST}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${item.seriesId}`;
+            const infoUrl = `${activeServerHost}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${item.seriesId}`;
             const data = await fetchJsonViaProxy(infoUrl);
             const episodesObj = data?.episodes || {};
             const epList = [];
@@ -172,13 +376,13 @@
                   ext,
                   subtitles: ep.info?.subtitles || [],
                   categoryName: `Temporada ${seasonNum}`,
-                  streamUrl: `${SERVER_HOST}/series/${username}/${password}/${ep.id}.${ext}`
+                  streamUrl: `${activeServerHost}/series/${username}/${password}/${ep.id}.${ext}`
                 });
               });
             });
             setSeriesEpisodes(epList);
             if (epList.length > 0) setActiveItem(epList[0]);
-          } catch (e) {
+          } catch (_) {
             alert('No se pudieron obtener los episodios de la serie.');
           } finally {
             setLoadingSeriesInfo(false);
@@ -223,54 +427,227 @@
         }
       };
 
+      // Formatear precio según moneda elegida
+      const formatConvertedPrice = (clpAmount) => {
+        const rate = exchange?.rates?.[selectedCurrency] || 1;
+        const converted = clpAmount * rate;
+        if (selectedCurrency === 'CLP' || selectedCurrency === 'ARS' || selectedCurrency === 'COP') {
+          return `${Math.round(converted).toLocaleString('es-CL')} ${selectedCurrency}`;
+        }
+        return `${converted.toFixed(2)} ${selectedCurrency}`;
+      };
+
+      const isOfficialClient = loginMode === 'OFFICIAL';
+      const applicableClpPrice = isOfficialClient ? pricing.priceOfficialCLP : pricing.priceExternalCLP;
+
       return (
         <div className="min-h-screen flex flex-col">
-          <header className="bg-[#0B0F19] border-b border-slate-800 px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+          {/* BARRA SUPERIOR */}
+          <header className="bg-[#0B0F19] border-b border-slate-800 px-4 lg:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center font-extrabold text-white text-lg shadow-lg">TV</div>
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full">v4.0 Multi-Audio & Subtítulos</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.0 Pro</span>
                 </div>
-                <p className="text-[11px] text-slate-400">app.fullpremiumtvcl.com</p>
+                <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
               </div>
             </div>
 
             {auth && (
               <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800 gap-1 text-xs">
-                <button onClick={() => handleTabChange('LIVE')} className={`px-3.5 py-1.5 rounded-lg font-bold transition ${activeTab === 'LIVE' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>📺 TV en Vivo ({liveCatalog.length})</button>
-                <button onClick={() => handleTabChange('MOVIES')} className={`px-3.5 py-1.5 rounded-lg font-bold transition ${activeTab === 'MOVIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>🎬 Películas ({moviesCatalog.length})</button>
-                <button onClick={() => handleTabChange('SERIES')} className={`px-3.5 py-1.5 rounded-lg font-bold transition ${activeTab === 'SERIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>📂 Series ({seriesCatalog.length})</button>
+                <button onClick={() => handleTabChange('LIVE')} className={`px-3 py-1.5 rounded-lg font-bold transition ${activeTab === 'LIVE' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>📺 TV en Vivo ({liveCatalog.length})</button>
+                <button onClick={() => handleTabChange('MOVIES')} className={`px-3 py-1.5 rounded-lg font-bold transition ${activeTab === 'MOVIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>🎬 Películas ({moviesCatalog.length})</button>
+                <button onClick={() => handleTabChange('SERIES')} className={`px-3 py-1.5 rounded-lg font-bold transition ${activeTab === 'SERIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>📂 Series ({seriesCatalog.length})</button>
               </div>
             )}
 
-            {auth && (
-              <button onClick={() => setAuth(false)} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700">
-                Salir ({username})
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Estado de Prueba de 12 Días o Licencia Anual */}
+              <button
+                onClick={() => setShowLicenseModal(true)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                  deviceAccess.status === 'LICENSED'
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                    : deviceAccess.allowed
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                    : 'bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse'
+                }`}
+              >
+                {deviceAccess.status === 'LICENSED'
+                  ? `✅ Licencia Activa (${deviceAccess.daysLeft} días)`
+                  : deviceAccess.allowed
+                  ? `⏳ Prueba Gratis: ${deviceAccess.daysLeft} de 12 días`
+                  : '🔒 Prueba de 12 días vencida — Activar'}
               </button>
-            )}
+
+              {/* Botón Descargar / Instalar en Plataformas */}
+              <button
+                onClick={() => setShowAppsModal(true)}
+                className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold"
+              >
+                📲 Instalar App
+              </button>
+
+              {/* Botón Panel Admin */}
+              <button
+                onClick={() => setShowAdminModal(true)}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-bold"
+              >
+                ⚙️ Admin
+              </button>
+
+              {auth && (
+                <button onClick={() => setAuth(false)} className="px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/70 text-xs font-semibold text-rose-200 border border-rose-700/40">
+                  Cambiar Lista / Salir
+                </button>
+              )}
+            </div>
           </header>
 
+          {/* CONTENIDO PRINCIPAL */}
           <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 lg:p-6">
-            {!auth ? (
-              <div className="max-w-md mx-auto mt-14 bg-[#0B0F19] border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-6">
-                <h2 className="text-xl font-bold text-white text-center">Acceso Suscriptor</h2>
+            {/* BLOQUEO AUTOMÁTICO SI VENCIERON LOS 12 DÍAS DE PRUEBA */}
+            {!deviceAccess.allowed ? (
+              <div className="max-w-xl mx-auto mt-10 bg-[#0B0F19] border-2 border-rose-500/50 rounded-3xl p-8 shadow-2xl text-center space-y-5">
+                <div className="w-16 h-16 mx-auto rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-3xl">🔒</div>
+                <h2 className="text-2xl font-extrabold text-white">Periodo de Prueba de 12 Días Finalizado</h2>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Tu dispositivo <strong className="text-violet-300 font-mono">{deviceId}</strong> ha completado los 12 días gratuitos de prueba de <strong>Full Premium TvGo</strong>. Para continuar disfrutando de la aplicación durante <strong>1 Año Completo (365 días)</strong>, adquiere y activa tu código de licencia.
+                </p>
+                <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 text-left space-y-2 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Clientes Oficiales Full Premium TvGo:</span>
+                    <span className="font-extrabold text-emerald-400 text-sm">${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP / Año ({formatConvertedPrice(pricing.priceOfficialCLP)})</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Otros Clientes (Listas Externas M3U / Xtream):</span>
+                    <span className="font-extrabold text-amber-300 text-sm">${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP / Año ({formatConvertedPrice(pricing.priceExternalCLP)})</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowLicenseModal(true)}
+                  className="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-extrabold text-xs shadow-lg"
+                >
+                  🔑 Ingresar Código de Licencia o Ver Medios de Pago
+                </button>
+              </div>
+            ) : !auth ? (
+              /* LOGIN CON 3 MODALIDADES: OFICIAL, XTREAM PROPIO O LISTA M3U */
+              <div className="max-w-lg mx-auto mt-8 bg-[#0B0F19] border border-slate-800 rounded-3xl p-6 lg:p-8 shadow-2xl space-y-6">
+                <div className="text-center space-y-1">
+                  <h2 className="text-xl font-extrabold text-white">Conectar a Full Premium TvGo</h2>
+                  <p className="text-xs text-slate-400">Elige tu modalidad de acceso o carga tu propia lista</p>
+                </div>
+
+                {/* Selector de las 3 modalidades */}
+                <div className="grid grid-cols-3 gap-1.5 bg-slate-900 p-1.5 rounded-2xl border border-slate-800 text-[11px] font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setLoginMode('OFFICIAL')}
+                    className={`py-2 px-2 rounded-xl transition ${loginMode === 'OFFICIAL' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    ⭐ Cliente Full Premium
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLoginMode('CUSTOM_XTREAM')}
+                    className={`py-2 px-2 rounded-xl transition ${loginMode === 'CUSTOM_XTREAM' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    🌐 Xtream Propio
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLoginMode('CUSTOM_M3U')}
+                    className={`py-2 px-2 rounded-xl transition ${loginMode === 'CUSTOM_M3U' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    📂 Subir Lista M3U
+                  </button>
+                </div>
+
                 <form onSubmit={handleLogin} className="space-y-4">
-                  <div>
-                    <label className="block text-xs text-slate-300 mb-1">Usuario</label>
-                    <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" required />
+                  {loginMode === 'CUSTOM_XTREAM' && (
+                    <div>
+                      <label className="block text-xs text-slate-300 mb-1">URL del Servidor Xtream (Host:Puerto)</label>
+                      <input
+                        type="url"
+                        placeholder="http://ejemplo.com:8080"
+                        value={customServerUrl}
+                        onChange={e => setCustomServerUrl(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  {loginMode !== 'CUSTOM_M3U' ? (
+                    <>
+                      <div>
+                        <label className="block text-xs text-slate-300 mb-1">Usuario</label>
+                        <input
+                          type="text"
+                          value={username}
+                          onChange={e => setUsername(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-300 mb-1">Contraseña</label>
+                        <input
+                          type="password"
+                          value={password}
+                          onChange={e => setPassword(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                          required
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="block text-xs text-slate-300 mb-1">Pegar URL de Lista M3U / M3U8</label>
+                        <input
+                          type="url"
+                          placeholder="http://servidor.com/get.php?username=...&type=m3u_plus"
+                          value={m3uUrlInput}
+                          onChange={e => setM3uUrlInput(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                        />
+                      </div>
+                      <div className="text-center text-[11px] text-slate-500">o también puedes subir tu archivo .M3U local</div>
+                      <div>
+                        <label className="block w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-dashed border-violet-500/50 text-center text-xs text-violet-300 font-semibold cursor-pointer hover:bg-slate-800/60">
+                          📁 Seleccionar archivo .M3U / .M3U8 desde tu equipo
+                          <input type="file" accept=".m3u,.m3u8,.txt" onChange={handleM3uFileUpload} className="hidden" />
+                        </label>
+                        {m3uRawText && (
+                          <p className="text-[11px] text-emerald-400 mt-1 text-center">✔ Archivo M3U cargado y listo ({m3uRawText.length} caracteres)</p>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {/* Resumen de licencia y prueba gratis */}
+                  <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300 flex items-center justify-between">
+                    <span>
+                      {loginMode === 'OFFICIAL'
+                        ? 'Tarifa Licencia Anual Cliente Oficial:'
+                        : 'Tarifa Licencia Anual Lista Externa:'}
+                    </span>
+                    <strong className="text-emerald-400">
+                      ${applicableClpPrice.toLocaleString('es-CL')} CLP / Año
+                    </strong>
                   </div>
-                  <div>
-                    <label className="block text-xs text-slate-300 mb-1">Contraseña</label>
-                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" required />
-                  </div>
+
                   <button type="submit" disabled={loading} className="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg disabled:opacity-50 transition">
-                    {loading ? loadingStatus : 'Entrar a Full Premium TvGo'}
+                    {loading ? loadingStatus : 'Iniciar Reproductor Full Premium TvGo'}
                   </button>
                 </form>
               </div>
             ) : (
+              /* INTERFAZ PRINCIPAL DE CATÁLOGO + REPRODUCTOR */
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                 <div className="xl:col-span-5 bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-col h-[740px]">
                   <div className="mb-2.5">
@@ -314,24 +691,424 @@
                 </div>
 
                 <div className="xl:col-span-7">
-                  <VideoPlayer item={activeItem} username={username} password={password} />
+                  <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
                 </div>
               </div>
             )}
           </main>
+
+          {/* MODAL 1: ACTIVACIÓN DE LICENCIA ANUAL Y CALCULADORA MULTIMONEDA */}
+          {showLicenseModal && (
+            <LicenseModal
+              deviceId={deviceId}
+              deviceAccess={deviceAccess}
+              pricing={pricing}
+              exchange={exchange}
+              selectedCurrency={selectedCurrency}
+              setSelectedCurrency={setSelectedCurrency}
+              formatConvertedPrice={formatConvertedPrice}
+              onClose={() => setShowLicenseModal(false)}
+              onActivated={(newAccess) => {
+                setDeviceAccess(newAccess);
+                setShowLicenseModal(false);
+              }}
+            />
+          )}
+
+          {/* MODAL 2: PANEL DE ADMINISTRACIÓN */}
+          {showAdminModal && (
+            <AdminModal onClose={() => setShowAdminModal(false)} />
+          )}
+
+          {/* MODAL 3: DESCARGAR / INSTALAR EN DISTINTAS PLATAFORMAS */}
+          {showAppsModal && (
+            <PlatformsModal
+              deferredPwaPrompt={deferredPwaPrompt}
+              onClose={() => setShowAppsModal(false)}
+            />
+          )}
         </div>
       );
     }
 
-    function VideoPlayer({ item, username, password }) {
+    // ========================================================================
+    // COMPONENTE: MODAL DE LICENCIA (12 DÍAS DE PRUEBA + PRECIOS MULTIMONEDA)
+    // ========================================================================
+    function LicenseModal({
+      deviceId,
+      deviceAccess,
+      pricing,
+      exchange,
+      selectedCurrency,
+      setSelectedCurrency,
+      formatConvertedPrice,
+      onClose,
+      onActivated
+    }) {
+      const [licenseInput, setLicenseInput] = useState('');
+      const [activating, setActivating] = useState(false);
+      const [feedback, setFeedback] = useState('');
+
+      const handleActivate = async (e) => {
+        e.preventDefault();
+        setActivating(true);
+        setFeedback('');
+        try {
+          const res = await fetch('/api/license/activate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId, code: licenseInput })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Error al validar licencia');
+          alert(data.message);
+          onActivated(data.access);
+        } catch (err) {
+          setFeedback(err.message);
+        } finally {
+          setActivating(false);
+        }
+      };
+
+      const currencies = [
+        { code: 'CLP', name: '🇨🇱 Peso Chileno (CLP)' },
+        { code: 'PEN', name: '🇵🇪 Sol Peruano (PEN)' },
+        { code: 'USD', name: '🇺🇸 Dólar (USD)' },
+        { code: 'EUR', name: '🇪🇺 Euro (EUR)' },
+        { code: 'ARS', name: '🇦🇷 Peso Argentino (ARS)' },
+        { code: 'MXN', name: '🇲🇽 Peso Mexicano (MXN)' },
+        { code: 'COP', name: '🇨🇴 Peso Colombiano (COP)' },
+        { code: 'BRL', name: '🇧🇷 Real Brasileño (BRL)' }
+      ];
+
+      return (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 lg:p-8 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-lg font-extrabold text-white">Licencia Anual & Estado de Prueba</h3>
+                <p className="text-xs text-slate-400">ID de tu Dispositivo: <strong className="text-violet-300 font-mono">{deviceId}</strong></p>
+              </div>
+              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold">✕ Cerrar</button>
+            </div>
+
+            {/* Tarjetas de Precios con Conversión al Tipo de Cambio del Día */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-300">Ver precios en tu moneda (Tipo de cambio del día):</span>
+                <select
+                  value={selectedCurrency}
+                  onChange={e => setSelectedCurrency(e.target.value)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 border border-violet-500/40 text-xs text-white font-bold"
+                >
+                  {currencies.map(c => (
+                    <option key={c.code} value={c.code}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-4 rounded-2xl bg-violet-950/30 border border-violet-500/40 space-y-1">
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-violet-600 text-white">Clientes Full Premium TvGo</span>
+                  <div className="text-xl font-extrabold text-white pt-1">
+                    {formatConvertedPrice(pricing.priceOfficialCLP)} <span className="text-xs font-normal text-slate-400">/ 1 Año</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Precio base: ${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP anuales</p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-900 border border-slate-700 space-y-1">
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">Otros Clientes (Listas Propias)</span>
+                  <div className="text-xl font-extrabold text-white pt-1">
+                    {formatConvertedPrice(pricing.priceExternalCLP)} <span className="text-xs font-normal text-slate-400">/ 1 Año</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Precio base: ${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP anuales</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Formulario para canjear código */}
+            <form onSubmit={handleActivate} className="space-y-3 pt-2 border-t border-slate-800">
+              <label className="block text-xs font-bold text-slate-200">¿Ya realizaste el pago? Ingresa tu Código de Licencia Anual:</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Ej: FP4K-8A9F-2C1D"
+                  value={licenseInput}
+                  onChange={e => setLicenseInput(e.target.value)}
+                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white"
+                  required
+                />
+                <button
+                  type="submit"
+                  disabled={activating}
+                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg"
+                >
+                  {activating ? 'Validando...' : 'Activar 1 Año'}
+                </button>
+              </div>
+              {feedback && <p className="text-xs text-rose-400 font-semibold">{feedback}</p>}
+            </form>
+
+            {/* Botón directo a WhatsApp para comprar licencia */}
+            <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+              <div className="font-bold text-white">Medios de Pago Autorizados:</div>
+              <p className="text-slate-400">{pricing.paymentInstructions}</p>
+              <a
+                href={`https://wa.me/${pricing.whatsappNumber.replace(/\D/g, '')}?text=${encodeURIComponent(`Hola! Quiero adquirir la licencia anual de Full Premium TvGo para mi Dispositivo ID: ${deviceId}`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="block w-full text-center py-2.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-bold"
+              >
+                💬 Solicitar Código de Licencia por WhatsApp ({pricing.whatsappNumber})
+              </a>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================================================
+    // COMPONENTE: PANEL DE ADMINISTRACIÓN DE LA APP
+    // ========================================================================
+    function AdminModal({ onClose }) {
+      const [adminKey, setAdminKey] = useState('');
+      const [loggedAdmin, setLoggedAdmin] = useState(false);
+      const [overview, setOverview] = useState({ settings: {}, devices: [], licenses: [] });
+      const [tierGen, setTierGen] = useState('OFFICIAL');
+      const [noteGen, setNoteGen] = useState('');
+      const [newLic, setNewLic] = useState(null);
+
+      const loadAdminData = async (keyToUse = adminKey) => {
+        const res = await fetch('/api/admin/overview', {
+          headers: { 'X-Admin-Key': keyToUse }
+        });
+        if (!res.ok) throw new Error('Clave incorrecta');
+        const data = await res.json();
+        setOverview(data);
+        setLoggedAdmin(true);
+      };
+
+      const handleAdminLogin = async (e) => {
+        e.preventDefault();
+        try {
+          await loadAdminData(adminKey);
+        } catch (err) {
+          alert('Contraseña de administrador inválida');
+        }
+      };
+
+      const handleGenerateLicense = async () => {
+        const res = await fetch('/api/admin/generate-license', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
+          body: JSON.stringify({ tier: tierGen, durationDays: 365, note: noteGen })
+        });
+        const data = await res.json();
+        if (data.license) {
+          setNewLic(data.license);
+          setNoteGen('');
+          loadAdminData();
+        }
+      };
+
+      const handleDeviceAction = async (deviceId, action) => {
+        await fetch('/api/admin/device-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
+          body: JSON.stringify({ deviceId, action })
+        });
+        loadAdminData();
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-5xl w-full p-6 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-lg font-extrabold text-white">⚙️ Panel de Administración — Full Premium TvGo</h3>
+              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold">✕ Cerrar</button>
+            </div>
+
+            {!loggedAdmin ? (
+              <form onSubmit={handleAdminLogin} className="max-w-sm mx-auto py-8 space-y-4">
+                <label className="block text-xs text-slate-300">Contraseña Maestra de Administración:</label>
+                <input
+                  type="password"
+                  placeholder="Contraseña Admin"
+                  value={adminKey}
+                  onChange={e => setAdminKey(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                  required
+                />
+                <button type="submit" className="w-full py-2.5 rounded-xl bg-violet-600 text-white font-bold text-xs">
+                  Entrar al Panel
+                </button>
+              </form>
+            ) : (
+              <div className="space-y-6 text-xs">
+                {/* Generador de Códigos de Licencia */}
+                <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+                  <div className="font-bold text-violet-300 text-sm">🔑 Generar Nuevo Código de Licencia Anual (365 Días)</div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <select
+                      value={tierGen}
+                      onChange={e => setTierGen(e.target.value)}
+                      className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold"
+                    >
+                      <option value="OFFICIAL">Cliente Oficial Full Premium ($4.000 CLP)</option>
+                      <option value="EXTERNAL">Cliente Externo otra lista ($6.000 CLP)</option>
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Nota / Nombre del cliente (opcional)"
+                      value={noteGen}
+                      onChange={e => setNoteGen(e.target.value)}
+                      className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                    />
+                    <button
+                      onClick={handleGenerateLicense}
+                      className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold"
+                    >
+                      + Crear Código de Licencia
+                    </button>
+                  </div>
+                  {newLic && (
+                    <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 flex items-center justify-between">
+                      <span>Código generado: <strong className="font-mono text-base text-white">{newLic.code}</strong> ({newLic.priceCLP} CLP - 365 días)</span>
+                      <button onClick={() => navigator.clipboard.writeText(newLic.code)} className="px-3 py-1 rounded bg-emerald-600 text-white font-bold">Copiar Código</button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Tabla de Dispositivos Registrados y sus 12 días de prueba */}
+                <div className="space-y-2">
+                  <div className="font-bold text-white text-sm">📱 Dispositivos Registrados ({overview.devices.length})</div>
+                  <div className="overflow-x-auto border border-slate-800 rounded-2xl">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-900 text-slate-400 border-b border-slate-800">
+                          <th className="p-2.5">Device ID</th>
+                          <th className="p-2.5">Tipo / Usuario</th>
+                          <th className="p-2.5">Estado</th>
+                          <th className="p-2.5">Días Restantes</th>
+                          <th className="p-2.5">Acciones Directas</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {overview.devices.map(dev => (
+                          <tr key={dev.deviceId} className="hover:bg-slate-900/40">
+                            <td className="p-2.5 font-mono font-bold text-violet-300">{dev.deviceId}</td>
+                            <td className="p-2.5">
+                              <div>{dev.clientType === 'OFFICIAL' ? '⭐ Oficial ($4.000)' : '🌐 Externo ($6.000)'}</div>
+                              <div className="text-[10px] text-slate-400">{dev.username || dev.providerLabel}</div>
+                            </td>
+                            <td className="p-2.5">
+                              <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                                dev.computed.status === 'LICENSED' ? 'bg-emerald-500/20 text-emerald-300' :
+                                dev.computed.status === 'TRIAL' ? 'bg-amber-500/20 text-amber-300' :
+                                'bg-rose-500/20 text-rose-300'
+                              }`}>
+                                {dev.computed.status}
+                              </span>
+                            </td>
+                            <td className="p-2.5 font-bold">{dev.computed.daysLeft} días</td>
+                            <td className="p-2.5 flex flex-wrap gap-1.5">
+                              <button onClick={() => handleDeviceAction(dev.deviceId, 'ACTIVATE_1Y')} className="px-2 py-1 rounded bg-emerald-600/30 text-emerald-200 font-semibold">Activar 1 Año</button>
+                              <button onClick={() => handleDeviceAction(dev.deviceId, 'RESET_TRIAL')} className="px-2 py-1 rounded bg-indigo-600/30 text-indigo-200 font-semibold">Reiniciar 12 Días</button>
+                              {dev.blockedManually ? (
+                                <button onClick={() => handleDeviceAction(dev.deviceId, 'UNBLOCK')} className="px-2 py-1 rounded bg-amber-600/30 text-amber-200 font-semibold">Desbloquear</button>
+                              ) : (
+                                <button onClick={() => handleDeviceAction(dev.deviceId, 'BLOCK')} className="px-2 py-1 rounded bg-rose-600/30 text-rose-200 font-semibold">Bloquear</button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Lista de Códigos de Licencia Generados */}
+                <div className="space-y-2">
+                  <div className="font-bold text-white text-sm">🎟️ Códigos de Licencia Generados ({overview.licenses.length})</div>
+                  <div className="overflow-x-auto border border-slate-800 rounded-2xl max-h-56">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-900 text-slate-400 border-b border-slate-800">
+                          <th className="p-2.5">Código</th>
+                          <th className="p-2.5">Tarifa</th>
+                          <th className="p-2.5">Cliente / Nota</th>
+                          <th className="p-2.5">Estado</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {overview.licenses.map(l => (
+                          <tr key={l.code}>
+                            <td className="p-2.5 font-mono font-bold text-emerald-300">{l.code}</td>
+                            <td className="p-2.5">${l.priceCLP} CLP ({l.tier})</td>
+                            <td className="p-2.5">{l.note || '-'}</td>
+                            <td className="p-2.5">{l.usedBy ? `Usado en ${l.usedBy}` : 'Disponible'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================================================
+    // COMPONENTE: MODAL DE INSTALACIÓN MULTIPLATAFORMA
+    // ========================================================================
+    function PlatformsModal({ deferredPwaPrompt, onClose }) {
+      const handleInstallPwa = async () => {
+        if (deferredPwaPrompt) {
+          deferredPwaPrompt.prompt();
+          await deferredPwaPrompt.userChoice;
+        } else {
+          alert('Para instalar directamente: En Chrome/Edge o Android pulsa el menú del navegador (⋮) y selecciona "Instalar aplicación" o "Agregar a pantalla de inicio".');
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 shadow-2xl space-y-4 text-xs">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-lg font-extrabold text-white">📲 Descargar Full Premium TvGo en tus Dispositivos</h3>
+              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold">✕</button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+                <div className="font-bold text-white text-sm">📱 Android / Android TV / Fire TV</div>
+                <p className="text-slate-400">Instala la WebApp (PWA) sin ocupar espacio o descarga el instalador APK para TV Box.</p>
+                <button onClick={handleInstallPwa} className="w-full py-2 rounded-xl bg-violet-600 text-white font-bold">Instalar App en este Dispositivo</button>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+                <div className="font-bold text-white text-sm">💻 Windows / Mac / Smart TV</div>
+                <p className="text-slate-400">En Windows/Mac haz clic en el ícono de instalación de la barra de direcciones de Chrome/Edge.</p>
+                <button onClick={handleInstallPwa} className="w-full py-2 rounded-xl bg-indigo-600 text-white font-bold">Crear Acceso Directo Escritorio</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================================================================
+    // COMPONENTE: REPRODUCTOR DE VIDEO (MSE + FFMPEG HD/FHD + MULTI-AUDIO + SUBS)
+    // ========================================================================
+    function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
 
       const [status, setStatus] = useState('IDLE');
-      // Para TV en Vivo: 'MSE' (rápido .ts) | 'FFMPEG_HD' (repara HD/FHD con solo audio o códec HEVC)
       const [liveEngine, setLiveEngine] = useState('MSE');
 
-      // Para Películas y Series: Detector y Selector de Audio y Subtítulos
       const [audioTracks, setAudioTracks] = useState([
         { index: 0, label: 'Pista 1 — Español / Principal (Por defecto)' },
         { index: 1, label: 'Pista 2 — Inglés / Audio Original (Dual)' },
@@ -340,11 +1117,9 @@
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
       const [useServerAudioSwitch, setUseServerAudioSwitch] = useState(false);
 
-      // Subtítulos
       const [subtitleTracks, setSubtitleTracks] = useState([]);
       const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
-      // Al cambiar de canal o película, resetear siempre al estado limpio inicial
       useEffect(() => {
         setLiveEngine('MSE');
         setSelectedAudioTrack(0);
@@ -352,13 +1127,11 @@
         setSubtitleTracks([]);
         setActiveSubtitle('OFF');
 
-        // Si es una Película, consultar metadatos reales de pistas de audio y subtítulos en Xtream
-        if (item?.type === 'MOVIE' && item?.streamId) {
-          const vodInfoUrl = `${SERVER_HOST}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_info&vod_id=${item.streamId}`;
+        if (item?.type === 'MOVIE' && item?.streamId && serverHost) {
+          const vodInfoUrl = `${serverHost}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_info&vod_id=${item.streamId}`;
           fetch(`/proxy?url=${encodeURIComponent(vodInfoUrl)}`)
             .then(r => r.json())
             .then(data => {
-              // Extraer subtítulos externos si Xtream los provee
               const subs = data?.info?.subtitles || [];
               if (Array.isArray(subs) && subs.length > 0) {
                 setSubtitleTracks(subs.map((s, idx) => ({
@@ -372,7 +1145,6 @@
         }
       }, [item]);
 
-      // Efecto principal de reproducción
       useEffect(() => {
         if (!item?.streamUrl || !videoRef.current) return;
         setStatus('LOADING');
@@ -405,21 +1177,17 @@
               player.play().catch(() => {});
               setStatus('PLAYING');
 
-              player.on(window.mpegts.Events.ERROR, () => {
-                setStatus('ERROR');
-              });
-            } catch (e) {
+              player.on(window.mpegts.Events.ERROR, () => setStatus('ERROR'));
+            } catch (_) {
               setStatus('ERROR');
             }
           } else {
-            // Modo Reparación HD/FHD (Transcodifica audio AC3 y video HEVC a MP4 H.264/AAC en vivo)
             const transcodeLiveUrl = `${window.location.origin}/transcode?url=${encodeURIComponent(item.streamUrl)}&audio=0&reencode=1`;
             video.src = transcodeLiveUrl;
             video.load();
             video.play().then(() => setStatus('PLAYING')).catch(() => setStatus('ERROR'));
           }
         } else {
-          // PELÍCULAS Y SERIES (VOD)
           const vodUrl = useServerAudioSwitch
             ? `${window.location.origin}/transcode?url=${encodeURIComponent(item.streamUrl)}&audio=${selectedAudioTrack}`
             : directProxyUrl;
@@ -428,7 +1196,6 @@
           video.load();
           video.play().then(() => {
             setStatus('PLAYING');
-            // Detector nativo de pistas de audio si el navegador expone video.audioTracks
             if (video.audioTracks && video.audioTracks.length > 1) {
               const detected = [];
               for (let i = 0; i < video.audioTracks.length; i++) {
@@ -454,24 +1221,20 @@
         };
       }, [item, liveEngine, selectedAudioTrack, useServerAudioSwitch]);
 
-      // Cambiar idioma de audio en Películas y Series
       const handleAudioChange = (newIndex) => {
         const idx = Number(newIndex);
         setSelectedAudioTrack(idx);
         const video = videoRef.current;
 
-        // 1. Si el navegador soporta cambio nativo de audioTracks, cambiar al instante
         if (video && video.audioTracks && video.audioTracks.length > 1 && !useServerAudioSwitch) {
           for (let i = 0; i < video.audioTracks.length; i++) {
             video.audioTracks[i].enabled = (i === idx);
           }
         } else {
-          // 2. Para películas .MKV Duales donde Chrome no expone audioTracks, el servidor extrae la pista elegida
           setUseServerAudioSwitch(true);
         }
       };
 
-      // Activar / Desactivar subtítulos
       const handleSubtitleChange = (subId) => {
         setActiveSubtitle(subId);
         const video = videoRef.current;
@@ -482,7 +1245,6 @@
         }
       };
 
-      // Subir archivo de subtítulos (.srt o .vtt) desde la PC/Móvil
       const handleUploadSubtitle = (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -504,29 +1266,24 @@
 
       return (
         <div className="bg-[#0B0F19] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-          
-          {/* BARRA SUPERIOR DE CONTROLES AVANZADOS: AUDIO, SUBTÍTULOS Y REPARACIÓN HD/FHD */}
           <div className="p-3 bg-slate-900/95 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
             {item?.type === 'LIVE' ? (
               <div className="flex flex-wrap items-center justify-between w-full gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
-                    EN VIVO
-                  </span>
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">EN VIVO</span>
                   <span className="text-slate-300 font-medium">
-                    Motor actual: <strong className="text-violet-300">{liveEngine === 'MSE' ? 'MPEG-TS Directo (Rápido)' : 'FFmpeg HD/FHD (Audio+Video Compatible)'}</strong>
+                    Motor: <strong className="text-violet-300">{liveEngine === 'MSE' ? 'MPEG-TS Directo' : 'FFmpeg HD/FHD Compatible'}</strong>
                   </span>
                 </div>
                 <button
                   onClick={() => setLiveEngine(e => e === 'MSE' ? 'FFMPEG_HD' : 'MSE')}
                   className={`px-3 py-1.5 rounded-xl font-bold transition shadow ${liveEngine === 'FFMPEG_HD' ? 'bg-amber-500 text-slate-950' : 'bg-violet-600 hover:bg-violet-500 text-white'}`}
                 >
-                  {liveEngine === 'MSE' ? '🔧 Reparar Canal HD/FHD (Si no abre o sin imagen)' : '⚡ Volver a Modo MPEG-TS Rápido'}
+                  {liveEngine === 'MSE' ? '🔧 Reparar Canal HD/FHD (Audio/Imagen)' : '⚡ Volver a Modo Rápido'}
                 </button>
               </div>
             ) : isVod ? (
               <div className="flex flex-wrap items-center gap-3 w-full">
-                {/* 1. DETECTOR Y SELECTOR DE IDIOMA DE AUDIO */}
                 <div className="flex items-center gap-1.5">
                   <span className="text-violet-300 font-bold">🔊 Idioma Audio:</span>
                   <select
@@ -540,7 +1297,6 @@
                   </select>
                 </div>
 
-                {/* 2. SELECTOR DE SUBTÍTULOS */}
                 <div className="flex items-center gap-1.5">
                   <span className="text-violet-300 font-bold">💬 Subtítulos:</span>
                   <select
@@ -555,68 +1311,49 @@
                   </select>
                 </div>
 
-                {/* 3. CARGAR ARCHIVO .SRT / .VTT */}
                 <label className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer border border-slate-700 transition">
                   + Subir .SRT
                   <input type="file" accept=".srt,.vtt" onChange={handleUploadSubtitle} className="hidden" />
                 </label>
               </div>
             ) : (
-              <span className="text-slate-400">Selecciona un contenido para reproducir</span>
+              <span className="text-slate-400">Selecciona un contenido</span>
             )}
           </div>
 
-          {/* PANTALLA DE VIDEO */}
           <div className="relative aspect-video bg-black flex items-center justify-center">
             <video ref={videoRef} controls playsInline autoPlay crossOrigin="anonymous" className="w-full h-full object-contain">
               {subtitleTracks.map(sub => (
-                <track
-                  key={sub.id}
-                  kind="subtitles"
-                  label={sub.label}
-                  src={sub.url}
-                  default={activeSubtitle === sub.label}
-                />
+                <track key={sub.id} kind="subtitles" label={sub.label} src={sub.url} default={activeSubtitle === sub.label} />
               ))}
             </video>
 
             {status === 'LOADING' && (
               <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                <span className="text-xs text-violet-300 font-semibold">Conectando flujo de video: {item?.title}</span>
+                <span className="text-xs text-violet-300 font-semibold">Conectando flujo: {item?.title}</span>
               </div>
             )}
 
             {status === 'ERROR' && (
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3">
                 <p className="text-amber-400 font-bold text-sm">El canal o archivo requiere decodificación asistida</p>
-                <p className="text-xs text-slate-400 max-w-md">
-                  Algunos canales FHD/HD o películas MKV usan audio Dolby AC3 o video HEVC. Pulsa el botón inferior para procesarlo con el motor del servidor:
-                </p>
                 {item?.type === 'LIVE' ? (
-                  <button
-                    onClick={() => setLiveEngine('FFMPEG_HD')}
-                    className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg"
-                  >
+                  <button onClick={() => setLiveEngine('FFMPEG_HD')} className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg">
                     🔧 Activar Decodificador HD/FHD en Servidor
                   </button>
                 ) : (
-                  <button
-                    onClick={() => setUseServerAudioSwitch(true)}
-                    className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg"
-                  >
-                    🔧 Reproducir Película con Decodificador Multi-Audio
+                  <button onClick={() => setUseServerAudioSwitch(true)} className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg">
+                    🔧 Reproducir con Decodificador Multi-Audio
                   </button>
                 )}
               </div>
             )}
           </div>
 
-          <div className="p-4 border-t border-slate-800 flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un canal, película o serie'}</h3>
-              <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{item?.streamUrl}</p>
-            </div>
+          <div className="p-4 border-t border-slate-800">
+            <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un canal, película o serie'}</h3>
+            <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{item?.streamUrl}</p>
           </div>
         </div>
       );

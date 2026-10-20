@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panel de Control Central — Full Premium TvGo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-[#05070D] text-slate-100 min-h-screen font-sans p-4 lg:p-8">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    function AdminDashboard() {
+      const [adminKey, setAdminKey] = useState(localStorage.getItem('tvgo_admin_token') || '');
+      const [isLogged, setIsLogged] = useState(false);
+      const [overview, setOverview] = useState({ settings: {}, devices: [], licenses: [] });
+      const [tierGen, setTierGen] = useState('OFFICIAL');
+      const [noteGen, setNoteGen] = useState('');
+      const [newLic, setNewLic] = useState(null);
+      const [loading, setLoading] = useState(false);
+
+      const fetchAdminData = async (token = adminKey) => {
+        setLoading(true);
+        try {
+          const res = await fetch('/api/admin/overview', {
+            headers: { 'X-Admin-Key': token }
+          });
+          if (!res.ok) throw new Error('Clave maestra no autorizada.');
+          const data = await res.json();
+          setOverview(data);
+          setIsLogged(true);
+          localStorage.setItem('tvgo_admin_token', token);
+        } catch (err) {
+          alert(err.message);
+          setIsLogged(false);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => {
+        if (adminKey) fetchAdminData(adminKey);
+      }, []);
+
+      const handleLogin = (e) => {
+        e.preventDefault();
+        fetchAdminData(adminKey);
+      };
+
+      const handleGenerateLicense = async () => {
+        const res = await fetch('/api/admin/generate-license', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
+          body: JSON.stringify({ tier: tierGen, durationDays: 365, note: noteGen })
+        });
+        const data = await res.json();
+        if (data.license) {
+          setNewLic(data.license);
+          setNoteGen('');
+          fetchAdminData(adminKey);
+        }
+      };
+
+      const handleDeviceAction = async (deviceId, action) => {
+        await fetch('/api/admin/device-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
+          body: JSON.stringify({ deviceId, action })
+        });
+        fetchAdminData(adminKey);
+      };
+
+      const handleLogout = () => {
+        localStorage.removeItem('tvgo_admin_token');
+        setAdminKey('');
+        setIsLogged(false);
+      };
+
+      if (!isLogged) {
+        return (
+          <div className="max-w-md mx-auto mt-20 bg-[#0B0F19] border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-5">
+            <div className="w-12 h-12 rounded-xl bg-violet-600/20 border border-violet-500/40 flex items-center justify-center text-xl mx-auto">🔐</div>
+            <h2 className="text-xl font-extrabold text-white text-center">Acceso Panel Privado</h2>
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs text-slate-300 mb-1">Clave Secreta de Servidor</label>
+                <input
+                  type="password"
+                  placeholder="Introduce la contraseña maestra"
+                  value={adminKey}
+                  onChange={e => setAdminKey(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg transition"
+              >
+                {loading ? 'Verificando...' : 'Iniciar Sesión'}
+              </button>
+            </form>
+          </div>
+        );
+      }
+
+      return (
+        <div className="max-w-6xl mx-auto space-y-6">
+          <header className="bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h1 className="text-lg font-extrabold text-white">⚙️ Panel de Gestión — Full Premium TvGo</h1>
+              <p className="text-xs text-slate-400">Control central de dispositivos, 12 días de prueba y licencias anuales</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={() => fetchAdminData(adminKey)} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700">🔄 Actualizar Datos</button>
+              <button onClick={handleLogout} className="px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900 text-xs font-semibold text-rose-200 border border-rose-700/40">Cerrar Sesión</button>
+            </div>
+          </header>
+
+          <section className="p-5 rounded-2xl bg-[#0B0F19] border border-slate-800 space-y-4">
+            <h2 className="text-sm font-bold text-violet-300">🔑 Generar Código de Licencia Anual (365 días)</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <select
+                value={tierGen}
+                onChange={e => setTierGen(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white font-semibold"
+              >
+                <option value="OFFICIAL">Cliente Oficial Full Premium ($4.000 CLP)</option>
+                <option value="EXTERNAL">Cliente Externo lista propia ($6.000 CLP)</option>
+              </select>
+              <input
+                type="text"
+                placeholder="Nombre o nota del cliente"
+                value={noteGen}
+                onChange={e => setNoteGen(e.target.value)}
+                className="px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+              />
+              <button
+                onClick={handleGenerateLicense}
+                className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg"
+              >
+                + Generar Código
+              </button>
+            </div>
+
+            {newLic && (
+              <div className="p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 flex items-center justify-between text-xs">
+                <span>Código Listo: <strong className="font-mono text-sm text-white px-2 py-0.5 rounded bg-emerald-800/50">{newLic.code}</strong> (${newLic.priceCLP} CLP — 365 días)</span>
+                <button
+                  onClick={() => navigator.clipboard.writeText(newLic.code)}
+                  className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold"
+                >
+                  Copiar
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="bg-[#0B0F19] border border-slate-800 rounded-2xl p-5 space-y-3">
+            <h2 className="text-sm font-bold text-white">📱 Dispositivos Registrados ({overview.devices.length})</h2>
+            <div className="overflow-x-auto border border-slate-800/80 rounded-xl">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-900 text-slate-400 border-b border-slate-800">
+                    <th className="p-3">Device ID</th>
+                    <th className="p-3">Tipo / Usuario</th>
+                    <th className="p-3">Estado</th>
+                    <th className="p-3">Días Restantes</th>
+                    <th className="p-3">Acciones de Control</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {overview.devices.map(dev => (
+                    <tr key={dev.deviceId} className="hover:bg-slate-900/40">
+                      <td className="p-3 font-mono font-bold text-violet-300">{dev.deviceId}</td>
+                      <td className="p-3">
+                        <div className="font-semibold">{dev.clientType === 'OFFICIAL' ? '⭐ Oficial ($4.000)' : '🌐 Externo ($6.000)'}</div>
+                        <div className="text-[10px] text-slate-400">{dev.username || dev.providerLabel}</div>
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                          dev.computed.status === 'LICENSED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
+                          dev.computed.status === 'TRIAL' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                          'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                        }`}>
+                          {dev.computed.status}
+                        </span>
+                      </td>
+                      <td className="p-3 font-bold">{dev.computed.daysLeft} días</td>
+                      <td className="p-3 flex flex-wrap gap-1.5">
+                        <button onClick={() => handleDeviceAction(dev.deviceId, 'ACTIVATE_1Y')} className="px-2.5 py-1 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 font-semibold">Activar 1 Año</button>
+                        <button onClick={() => handleDeviceAction(dev.deviceId, 'RESET_TRIAL')} className="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 font-semibold">Reiniciar 12 Días</button>
+                        {dev.blockedManually ? (
+                          <button onClick={() => handleDeviceAction(dev.deviceId, 'UNBLOCK')} className="px-2.5 py-1 rounded-lg bg-amber-600/30 text-amber-200 font-semibold">Desbloquear</button>
+                        ) : (
+                          <button onClick={() => handleDeviceAction(dev.deviceId, 'BLOCK')} className="px-2.5 py-1 rounded-lg bg-rose-600/30 text-rose-200 font-semibold">Bloquear</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="bg-[#0B0F19] border border-slate-800 rounded-2xl p-5 space-y-3">
+            <h2 className="text-sm font-bold text-white">🎟️ Registro de Licencias ({overview.licenses.length})</h2>
+            <div className="overflow-x-auto border border-slate-800/80 rounded-xl max-h-60">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-900 text-slate-400 border-b border-slate-800">
+                    <th className="p-2.5">Código</th>
+                    <th className="p-2.5">Tarifa</th>
+                    <th className="p-2.5">Nota</th>
+                    <th className="p-2.5">Uso</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {overview.licenses.map(l => (
+                    <tr key={l.code}>
+                      <td className="p-2.5 font-mono font-bold text-emerald-300">{l.code}</td>
+                      <td className="p-2.5">${l.priceCLP} CLP ({l.tier})</td>
+                      <td className="p-2.5">{l.note || '-'}</td>
+                      <td className="p-2.5">{l.usedBy ? `Usado en ${l.usedBy}` : 'Disponible'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<AdminDashboard />);
+  </script>
+</body>
+</html>

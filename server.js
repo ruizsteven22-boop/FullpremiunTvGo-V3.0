@@ -14,11 +14,10 @@ try {
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_SECRET = process.env.ADMIN_KEY || 'FullPremium2026*';
-const OFFICIAL_HOST = 'http://st.xn--aejo-gqa.de:80';
 const TRIAL_DAYS = 12;
 
 // ============================================================================
-// BASE DE DATOS PERSISTENTE DE DISPOSITIVOS Y LICENCIAS (data/db.json)
+// BASE DE DATOS PERSISTENTE (data/db.json)
 // ============================================================================
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -54,7 +53,6 @@ function saveDb(db) {
   }
 }
 
-// Evaluar estado de los 12 días de prueba o licencia anual de un dispositivo
 function evaluateDeviceStatus(device) {
   const now = Date.now();
   const trialMs = TRIAL_DAYS * 24 * 60 * 60 * 1000;
@@ -102,7 +100,7 @@ function evaluateDeviceStatus(device) {
 }
 
 // ============================================================================
-// TIPO DE CAMBIO DEL DÍA (Caché de 6 horas con respaldo automático)
+// TIPO DE CAMBIO DEL DÍA
 // ============================================================================
 let cachedRates = {
   updatedAt: 0,
@@ -236,7 +234,7 @@ http.createServer(async (req, res) => {
     return res.end();
   }
 
-  // 1. API: ESTADO DEL DISPOSITIVO, 12 DÍAS DE PRUEBA Y TIPO DE CAMBIO (/api/device/init)
+  // 1. API: ESTADO DE DISPOSITIVO Y 12 DÍAS DE PRUEBA
   if (pathname === '/api/device/init' && req.method === 'POST') {
     try {
       const body = await readJsonBody(req);
@@ -254,7 +252,7 @@ http.createServer(async (req, res) => {
           deviceId,
           firstSeenAt: now,
           lastSeenAt: now,
-          clientType: 'OFFICIAL', // 'OFFICIAL' ($4000 CLP) | 'EXTERNAL' ($6000 CLP)
+          clientType: 'OFFICIAL',
           providerLabel: 'Full Premium TvGo Oficial',
           username: '',
           licenseCode: null,
@@ -286,7 +284,7 @@ http.createServer(async (req, res) => {
     }
   }
 
-  // 2. API: ACTIVAR CÓDIGO DE LICENCIA ANUAL (/api/license/activate)
+  // 2. API: ACTIVAR CÓDIGO DE LICENCIA ANUAL
   if (pathname === '/api/license/activate' && req.method === 'POST') {
     try {
       const body = await readJsonBody(req);
@@ -345,7 +343,7 @@ http.createServer(async (req, res) => {
     }
   }
 
-  // 3. API PANEL DE ADMINISTRACIÓN (/api/admin/*)
+  // 3. API PRIVADA DE ADMINISTRACIÓN
   if (pathname.startsWith('/api/admin/')) {
     const providedKey = req.headers['x-admin-key'] || parsedUrl.searchParams.get('key');
     if (providedKey !== ADMIN_SECRET) {
@@ -373,7 +371,7 @@ http.createServer(async (req, res) => {
 
     if (pathname === '/api/admin/generate-license' && req.method === 'POST') {
       const body = await readJsonBody(req);
-      const tier = body.tier === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL'; // OFFICIAL ($4000) | EXTERNAL ($6000)
+      const tier = body.tier === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL';
       const durationDays = Number(body.durationDays) || 365;
       const note = String(body.note || '').trim();
 
@@ -401,7 +399,7 @@ http.createServer(async (req, res) => {
     if (pathname === '/api/admin/device-action' && req.method === 'POST') {
       const body = await readJsonBody(req);
       const deviceId = String(body.deviceId || '').toUpperCase();
-      const action = body.action; // 'ACTIVATE_1Y' | 'RESET_TRIAL' | 'BLOCK' | 'UNBLOCK'
+      const action = body.action;
 
       const dev = db.devices[deviceId];
       if (!dev) {
@@ -444,7 +442,7 @@ http.createServer(async (req, res) => {
     }
   }
 
-  // 4. ENDPOINT DE TRANSCODIFICACIÓN / SELECTOR DE AUDIO (/transcode)
+  // 4. TRANSCODIFICACIÓN EN VIVO (HD/FHD Y MULTI-AUDIO)
   if (pathname === '/transcode') {
     const targetUrl = parsedUrl.searchParams.get('url');
     const audioTrack = parseInt(parsedUrl.searchParams.get('audio') || '0', 10);
@@ -515,9 +513,7 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // =========================================================================
-  // 5. ENDPOINT PROXY DIRECTO (/proxy)
-  // =========================================================================
+  // 5. ENDPOINT PROXY DIRECTO (CORREGIDO CON SETNODELAY)
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.searchParams.get('url');
     if (!targetUrl) {
@@ -540,7 +536,6 @@ http.createServer(async (req, res) => {
         res.setHeader('content-type', 'video/mp2t');
       }
 
-      // Enviar paquetes al cliente sin delay TCP
       res.writeHead(proxyRes.statusCode);
       if (req.socket) req.socket.setNoDelay(true);
       proxyRes.pipe(res);
@@ -554,8 +549,9 @@ http.createServer(async (req, res) => {
     }
     return;
   }
+
   // 6. SERVIR ARCHIVOS ESTÁTICOS Y PWA
-  if (pathname === '/' || pathname === '/app' || pathname === '/admin') pathname = '/index.html';
+  if (pathname === '/' || pathname === '/app') pathname = '/index.html';
   const filePath = path.join(__dirname, 'public', pathname);
 
   fs.readFile(filePath, (err, data) => {
@@ -578,5 +574,5 @@ http.createServer(async (req, res) => {
   });
 
 }).listen(PORT, () => {
-  console.log(`>>> FULL PREMIUM TVGO v5.0 COMERCIAL OPERATIVO EN PUERTO ${PORT} <<<`);
+  console.log(`>>> FULL PREMIUM TVGO v5.0 OPERATIVO EN PUERTO ${PORT} <<<`);
 });

@@ -3,107 +3,138 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Panel de Control Central — Full Premium TvGo</title>
+  <title>Admin Dashboard — Full Premium TvGo</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body class="bg-[#05070D] text-slate-100 min-h-screen font-sans p-4 lg:p-8">
+<body class="bg-[#05070D] text-slate-100 min-h-screen font-sans selection:bg-violet-600 selection:text-white">
   <div id="root"></div>
 
   <script type="text/babel">
     const { useState, useEffect } = React;
 
-    function AdminDashboard() {
-      const [adminKey, setAdminKey] = useState(localStorage.getItem('tvgo_admin_token') || '');
-      const [isLogged, setIsLogged] = useState(false);
-      const [overview, setOverview] = useState({ settings: {}, devices: [], licenses: [] });
-      const [tierGen, setTierGen] = useState('OFFICIAL');
-      const [noteGen, setNoteGen] = useState('');
-      const [newLic, setNewLic] = useState(null);
+    function AdminApp() {
+      const [adminKey, setAdminKey] = useState(() => localStorage.getItem('tvgo_admin_key') || '');
+      const [isLoggedIn, setIsLoggedIn] = useState(false);
+      const [loginError, setLoginError] = useState('');
+      
+      const [data, setData] = useState({ settings: {}, devices: [], licenses: [] });
       const [loading, setLoading] = useState(false);
+      const [noteInput, setNoteInput] = useState('');
+      const [licenseTier, setLicenseTier] = useState('OFFICIAL');
+      const [createdCode, setCreatedCode] = useState(null);
+      const [searchTerm, setSearchTerm] = useState('');
 
-      const fetchAdminData = async (token = adminKey) => {
+      const fetchOverview = async (keyToUse) => {
         setLoading(true);
+        setLoginError('');
         try {
           const res = await fetch('/api/admin/overview', {
-            headers: { 'X-Admin-Key': token }
+            headers: { 'X-Admin-Key': keyToUse }
           });
-          if (!res.ok) throw new Error('Clave maestra no autorizada.');
-          const data = await res.json();
-          setOverview(data);
-          setIsLogged(true);
-          localStorage.setItem('tvgo_admin_token', token);
+          if (!res.ok) throw new Error('Clave de administrador no válida');
+          const resData = await res.json();
+          setData(resData);
+          setIsLoggedIn(true);
+          localStorage.setItem('tvgo_admin_key', keyToUse);
         } catch (err) {
-          alert(err.message);
-          setIsLogged(false);
+          setIsLoggedIn(false);
+          setLoginError(err.message);
         } finally {
           setLoading(false);
         }
       };
 
       useEffect(() => {
-        if (adminKey) fetchAdminData(adminKey);
+        if (adminKey) fetchOverview(adminKey);
       }, []);
 
-      const handleLogin = (e) => {
+      const handleLoginSubmit = (e) => {
         e.preventDefault();
-        fetchAdminData(adminKey);
+        fetchOverview(adminKey);
       };
 
-      const handleGenerateLicense = async () => {
-        const res = await fetch('/api/admin/generate-license', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
-          body: JSON.stringify({ tier: tierGen, durationDays: 365, note: noteGen })
-        });
-        const data = await res.json();
-        if (data.license) {
-          setNewLic(data.license);
-          setNoteGen('');
-          fetchAdminData(adminKey);
+      const handleLogout = () => {
+        localStorage.removeItem('tvgo_admin_key');
+        setAdminKey('');
+        setIsLoggedIn(false);
+      };
+
+      const handleGenerateLicense = async (e) => {
+        e.preventDefault();
+        try {
+          const res = await fetch('/api/admin/generate-license', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Admin-Key': adminKey
+            },
+            body: JSON.stringify({ tier: licenseTier, note: noteInput })
+          });
+          const result = await res.json();
+          if (result.ok) {
+            setCreatedCode(result.license.code);
+            setNoteInput('');
+            fetchOverview(adminKey);
+          }
+        } catch (err) {
+          alert('Error al generar licencia: ' + err.message);
         }
       };
 
       const handleDeviceAction = async (deviceId, action) => {
-        await fetch('/api/admin/device-action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
-          body: JSON.stringify({ deviceId, action })
-        });
-        fetchAdminData(adminKey);
+        try {
+          const res = await fetch('/api/admin/device-action', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Admin-Key': adminKey
+            },
+            body: JSON.stringify({ deviceId, action })
+          });
+          const result = await res.json();
+          if (result.ok) fetchOverview(adminKey);
+        } catch (err) {
+          alert('Error: ' + err.message);
+        }
       };
 
-      const handleLogout = () => {
-        localStorage.removeItem('tvgo_admin_token');
-        setAdminKey('');
-        setIsLogged(false);
-      };
+      const filteredDevices = data.devices.filter(d => 
+        d.deviceId.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (d.username && d.username.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
 
-      if (!isLogged) {
+      if (!isLoggedIn) {
         return (
-          <div className="max-w-md mx-auto mt-20 bg-[#0B0F19] border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-5">
-            <div className="w-12 h-12 rounded-xl bg-violet-600/20 border border-violet-500/40 flex items-center justify-center text-xl mx-auto">🔐</div>
-            <h2 className="text-xl font-extrabold text-white text-center">Acceso Panel Privado</h2>
-            <form onSubmit={handleLogin} className="space-y-4">
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <form onSubmit={handleLoginSubmit} className="bg-[#0B0F19] border border-slate-800 p-8 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl">
+              <div className="text-center space-y-1">
+                <div className="w-12 h-12 bg-violet-600 rounded-xl flex items-center justify-center font-black text-xl mx-auto shadow-lg shadow-violet-600/30">TV</div>
+                <h1 className="text-lg font-bold text-white pt-2">Full Premium TvGo</h1>
+                <p className="text-xs text-slate-400">Acceso a Panel Administrativo</p>
+              </div>
+
               <div>
-                <label className="block text-xs text-slate-300 mb-1">Clave Secreta de Servidor</label>
                 <input
                   type="password"
-                  placeholder="Introduce la contraseña maestra"
+                  placeholder="Contraseña Maestra..."
                   value={adminKey}
-                  onChange={e => setAdminKey(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                  onChange={(e) => setAdminKey(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
                   required
                 />
               </div>
+
+              {loginError && <p className="text-xs text-rose-400 text-center">{loginError}</p>}
+
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg transition"
+                className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg transition disabled:opacity-50"
               >
-                {loading ? 'Verificando...' : 'Iniciar Sesión'}
+                {loading ? 'Validando...' : 'Iniciar Sesión'}
               </button>
             </form>
           </div>
@@ -111,134 +142,205 @@
       }
 
       return (
-        <div className="max-w-6xl mx-auto space-y-6">
-          <header className="bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
+        <div className="min-h-screen flex flex-col p-4 lg:p-8 max-w-7xl mx-auto space-y-6">
+          {/* Header */}
+          <div className="flex flex-wrap items-center justify-between gap-4 bg-[#0B0F19] p-4 lg:p-6 rounded-3xl border border-slate-800">
             <div>
-              <h1 className="text-lg font-extrabold text-white">⚙️ Panel de Gestión — Full Premium TvGo</h1>
-              <p className="text-xs text-slate-400">Control central de dispositivos, 12 días de prueba y licencias anuales</p>
+              <h1 className="text-xl font-black text-white">Panel de Control & Licencias</h1>
+              <p className="text-xs text-slate-400">Gestión de Clientes, Suscripciones y Cobros</p>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={() => fetchAdminData(adminKey)} className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700">🔄 Actualizar Datos</button>
-              <button onClick={handleLogout} className="px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900 text-xs font-semibold text-rose-200 border border-rose-700/40">Cerrar Sesión</button>
-            </div>
-          </header>
-
-          <section className="p-5 rounded-2xl bg-[#0B0F19] border border-slate-800 space-y-4">
-            <h2 className="text-sm font-bold text-violet-300">🔑 Generar Código de Licencia Anual (365 días)</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <select
-                value={tierGen}
-                onChange={e => setTierGen(e.target.value)}
-                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white font-semibold"
-              >
-                <option value="OFFICIAL">Cliente Oficial Full Premium ($4.000 CLP)</option>
-                <option value="EXTERNAL">Cliente Externo lista propia ($6.000 CLP)</option>
-              </select>
-              <input
-                type="text"
-                placeholder="Nombre o nota del cliente"
-                value={noteGen}
-                onChange={e => setNoteGen(e.target.value)}
-                className="px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
-              />
               <button
-                onClick={handleGenerateLicense}
-                className="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg"
+                onClick={() => fetchOverview(adminKey)}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 transition"
               >
-                + Generar Código
+                🔄 Actualizar
+              </button>
+              <button
+                onClick={handleLogout}
+                className="px-3.5 py-2 rounded-xl bg-rose-600/20 border border-rose-500/30 text-rose-300 hover:bg-rose-600/30 text-xs font-bold transition"
+              >
+                Cerrar Sesión
               </button>
             </div>
+          </div>
 
-            {newLic && (
-              <div className="p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 flex items-center justify-between text-xs">
-                <span>Código Listo: <strong className="font-mono text-sm text-white px-2 py-0.5 rounded bg-emerald-800/50">{newLic.code}</strong> (${newLic.priceCLP} CLP — 365 días)</span>
-                <button
-                  onClick={() => navigator.clipboard.writeText(newLic.code)}
-                  className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold"
-                >
-                  Copiar
-                </button>
+          {/* Estadísticas Rápidas */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-[#0B0F19] border border-slate-800 p-5 rounded-2xl">
+              <div className="text-xs font-bold text-slate-400">Dispositivos Totales</div>
+              <div className="text-3xl font-extrabold text-white mt-1">{data.devices.length}</div>
+            </div>
+            <div className="bg-[#0B0F19] border border-emerald-500/30 p-5 rounded-2xl bg-emerald-950/10">
+              <div className="text-xs font-bold text-emerald-400">Licencias Pagadas (1 Año)</div>
+              <div className="text-3xl font-extrabold text-white mt-1">
+                {data.devices.filter(d => d.computed?.status === 'LICENSED').length}
               </div>
-            )}
-          </section>
-
-          <section className="bg-[#0B0F19] border border-slate-800 rounded-2xl p-5 space-y-3">
-            <h2 className="text-sm font-bold text-white">📱 Dispositivos Registrados ({overview.devices.length})</h2>
-            <div className="overflow-x-auto border border-slate-800/80 rounded-xl">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-900 text-slate-400 border-b border-slate-800">
-                    <th className="p-3">Device ID</th>
-                    <th className="p-3">Tipo / Usuario</th>
-                    <th className="p-3">Estado</th>
-                    <th className="p-3">Días Restantes</th>
-                    <th className="p-3">Acciones de Control</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {overview.devices.map(dev => (
-                    <tr key={dev.deviceId} className="hover:bg-slate-900/40">
-                      <td className="p-3 font-mono font-bold text-violet-300">{dev.deviceId}</td>
-                      <td className="p-3">
-                        <div className="font-semibold">{dev.clientType === 'OFFICIAL' ? '⭐ Oficial ($4.000)' : '🌐 Externo ($6.000)'}</div>
-                        <div className="text-[10px] text-slate-400">{dev.username || dev.providerLabel}</div>
-                      </td>
-                      <td className="p-3">
-                        <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                          dev.computed.status === 'LICENSED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
-                          dev.computed.status === 'TRIAL' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
-                          'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                        }`}>
-                          {dev.computed.status}
-                        </span>
-                      </td>
-                      <td className="p-3 font-bold">{dev.computed.daysLeft} días</td>
-                      <td className="p-3 flex flex-wrap gap-1.5">
-                        <button onClick={() => handleDeviceAction(dev.deviceId, 'ACTIVATE_1Y')} className="px-2.5 py-1 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 font-semibold">Activar 1 Año</button>
-                        <button onClick={() => handleDeviceAction(dev.deviceId, 'RESET_TRIAL')} className="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 font-semibold">Reiniciar 12 Días</button>
-                        {dev.blockedManually ? (
-                          <button onClick={() => handleDeviceAction(dev.deviceId, 'UNBLOCK')} className="px-2.5 py-1 rounded-lg bg-amber-600/30 text-amber-200 font-semibold">Desbloquear</button>
-                        ) : (
-                          <button onClick={() => handleDeviceAction(dev.deviceId, 'BLOCK')} className="px-2.5 py-1 rounded-lg bg-rose-600/30 text-rose-200 font-semibold">Bloquear</button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
-          </section>
-
-          <section className="bg-[#0B0F19] border border-slate-800 rounded-2xl p-5 space-y-3">
-            <h2 className="text-sm font-bold text-white">🎟️ Registro de Licencias ({overview.licenses.length})</h2>
-            <div className="overflow-x-auto border border-slate-800/80 rounded-xl max-h-60">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-900 text-slate-400 border-b border-slate-800">
-                    <th className="p-2.5">Código</th>
-                    <th className="p-2.5">Tarifa</th>
-                    <th className="p-2.5">Nota</th>
-                    <th className="p-2.5">Uso</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {overview.licenses.map(l => (
-                    <tr key={l.code}>
-                      <td className="p-2.5 font-mono font-bold text-emerald-300">{l.code}</td>
-                      <td className="p-2.5">${l.priceCLP} CLP ({l.tier})</td>
-                      <td className="p-2.5">{l.note || '-'}</td>
-                      <td className="p-2.5">{l.usedBy ? `Usado en ${l.usedBy}` : 'Disponible'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="bg-[#0B0F19] border border-amber-500/30 p-5 rounded-2xl bg-amber-950/10">
+              <div className="text-xs font-bold text-amber-400">En Periodo de Prueba (12 Días)</div>
+              <div className="text-3xl font-extrabold text-white mt-1">
+                {data.devices.filter(d => d.computed?.status === 'TRIAL').length}
+              </div>
             </div>
-          </section>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Generador de Licencias */}
+            <div className="bg-[#0B0F19] border border-slate-800 p-5 rounded-3xl space-y-4">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <span>🔑 Generar Licencia Manual (1 Año)</span>
+              </h2>
+              <form onSubmit={handleGenerateLicense} className="space-y-3">
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">Tipo de Cliente / Tarifa</label>
+                  <select
+                    value={licenseTier}
+                    onChange={(e) => setLicenseTier(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                  >
+                    <option value="OFFICIAL">⭐ Oficial ($4.000 CLP)</option>
+                    <option value="EXTERNAL">🌐 Lista Propia ($6.000 CLP)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">Nota / Cliente (Opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="Ej: Pago Juan Pérez CuentaRUT"
+                    value={noteInput}
+                    onChange={(e) => setNoteInput(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg transition"
+                >
+                  + Generar Código
+                </button>
+              </form>
+
+              {createdCode && (
+                <div className="p-3 bg-violet-950/40 border border-violet-500/40 rounded-xl text-center space-y-1">
+                  <div className="text-[10px] text-violet-300 font-bold uppercase">Código Creado:</div>
+                  <div className="text-sm font-mono font-black text-white select-all">{createdCode}</div>
+                </div>
+              )}
+
+              {/* Lista de Códigos Generados */}
+              <div className="pt-2 border-t border-slate-800/80">
+                <div className="text-xs font-bold text-slate-300 mb-2">Últimas Licencias Creadas</div>
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {data.licenses.map(lic => (
+                    <div key={lic.code} className="p-2 bg-slate-900/60 rounded-xl border border-slate-800 text-[11px] flex justify-between items-center">
+                      <div>
+                        <div className="font-mono font-bold text-violet-300">{lic.code}</div>
+                        <div className="text-[10px] text-slate-500">{lic.note || 'Sin nota'}</div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${lic.usedBy ? 'bg-slate-800 text-slate-400' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                        {lic.usedBy ? 'Canjeada' : 'Disponible'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Tabla de Dispositivos Conectados */}
+            <div className="lg:col-span-2 bg-[#0B0F19] border border-slate-800 p-5 rounded-3xl space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-sm font-bold text-white">Dispositivos Registrados ({filteredDevices.length})</h2>
+                <input
+                  type="text"
+                  placeholder="Buscar ID o usuario..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                />
+              </div>
+
+              <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-900/90 text-slate-400 text-[11px] sticky top-0">
+                    <tr>
+                      <th className="p-2.5 rounded-l-xl">Dispositivo ID</th>
+                      <th className="p-2.5">Estado</th>
+                      <th className="p-2.5">Días</th>
+                      <th className="p-2.5">Modalidad</th>
+                      <th className="p-2.5 rounded-r-xl text-right">Acciones Directas</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {filteredDevices.map(dev => (
+                      <tr key={dev.deviceId} className="hover:bg-slate-900/40">
+                        <td className="p-2.5 font-mono font-bold text-white">
+                          {dev.deviceId}
+                          {dev.username && <div className="text-[10px] text-slate-500 font-sans">{dev.username}</div>}
+                        </td>
+                        <td className="p-2.5">
+                          {dev.computed?.status === 'LICENSED' && (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 font-bold text-[10px]">1 Año Activo</span>
+                          )}
+                          {dev.computed?.status === 'TRIAL' && (
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-bold text-[10px]">Prueba</span>
+                          )}
+                          {dev.computed?.status === 'EXPIRED_TRIAL' && (
+                            <span className="px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 font-bold text-[10px]">Vencido</span>
+                          )}
+                          {dev.computed?.status === 'BLOCKED_ADMIN' && (
+                            <span className="px-2 py-0.5 rounded-md bg-red-600/30 text-red-200 font-bold text-[10px]">Bloqueado</span>
+                          )}
+                        </td>
+                        <td className="p-2.5 text-slate-300">
+                          {dev.computed?.daysLeft} días
+                        </td>
+                        <td className="p-2.5 text-slate-400 text-[11px]">
+                          {dev.clientType === 'OFFICIAL' ? 'Oficial ($4k)' : 'Lista ($6k)'}
+                        </td>
+                        <td className="p-2.5 text-right space-x-1 whitespace-nowrap">
+                          <button
+                            onClick={() => handleDeviceAction(dev.deviceId, 'ACTIVATE_1Y')}
+                            className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px]"
+                            title="Activar 1 año completo"
+                          >
+                            +1 Año
+                          </button>
+                          <button
+                            onClick={() => handleDeviceAction(dev.deviceId, 'RESET_TRIAL')}
+                            className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold text-[10px]"
+                            title="Reiniciar 12 días de prueba"
+                          >
+                            Reiniciar
+                          </button>
+                          {dev.blockedManually ? (
+                            <button
+                              onClick={() => handleDeviceAction(dev.deviceId, 'UNBLOCK')}
+                              className="px-2 py-1 rounded-lg bg-emerald-800 text-white text-[10px]"
+                            >
+                              Desbloquear
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleDeviceAction(dev.deviceId, 'BLOCK')}
+                              className="px-2 py-1 rounded-lg bg-rose-900/60 hover:bg-rose-800 text-rose-200 text-[10px]"
+                            >
+                              Bloquear
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       );
     }
 
-    ReactDOM.createRoot(document.getElementById('root')).render(<AdminDashboard />);
+    ReactDOM.createRoot(document.getElementById('root')).render(<AdminApp />);
   </script>
 </body>
 </html>

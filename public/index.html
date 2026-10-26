@@ -1138,6 +1138,7 @@
     function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
+      const retryCountRef = useRef(0);
 
       const [status, setStatus] = useState('IDLE');
       const [liveEngine, setLiveEngine] = useState('MSE');
@@ -1158,6 +1159,7 @@
         setUseServerAudioSwitch(false);
         setSubtitleTracks([]);
         setActiveSubtitle('OFF');
+        retryCountRef.current = 0;
 
         if (item?.type === 'MOVIE' && item?.streamId && serverHost) {
           const vodInfoUrl = `${serverHost}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_info&vod_id=${item.streamId}`;
@@ -1177,7 +1179,7 @@
         }
       }, [item]);
 
-      useEffect(() => {
+      const startPlayback = () => {
         if (!item?.streamUrl || !videoRef.current) return;
         setStatus('LOADING');
         const video = videoRef.current;
@@ -1215,7 +1217,14 @@
               player.play().catch(() => {});
               setStatus('PLAYING');
 
-              player.on(window.mpegts.Events.ERROR, () => setStatus('ERROR'));
+              player.on(window.mpegts.Events.ERROR, () => {
+                if (retryCountRef.current < 3) {
+                  retryCountRef.current += 1;
+                  setTimeout(startPlayback, 1500);
+                } else {
+                  setStatus('ERROR');
+                }
+              });
             } catch (_) {
               setStatus('ERROR');
             }
@@ -1223,7 +1232,14 @@
             const transcodeLiveUrl = `${window.location.origin}/transcode?url=${encodeURIComponent(item.streamUrl)}&audio=0&reencode=1`;
             video.src = transcodeLiveUrl;
             video.load();
-            video.play().then(() => setStatus('PLAYING')).catch(() => setStatus('ERROR'));
+            video.play().then(() => setStatus('PLAYING')).catch(() => {
+              if (retryCountRef.current < 3) {
+                retryCountRef.current += 1;
+                setTimeout(startPlayback, 1500);
+              } else {
+                setStatus('ERROR');
+              }
+            });
           }
         } else {
           const vodUrl = useServerAudioSwitch
@@ -1248,9 +1264,14 @@
           }).catch(() => setStatus('ERROR'));
         }
 
-        video.onplaying = () => setStatus('PLAYING');
-        video.onerror = () => setStatus('ERROR');
+        video.onplaying = () => {
+          setStatus('PLAYING');
+          retryCountRef.current = 0;
+        };
+      };
 
+      useEffect(() => {
+        startPlayback();
         return () => {
           if (playerRef.current) {
             try { if (playerRef.current.destroy) playerRef.current.destroy(); } catch (_) {}
@@ -1375,10 +1396,10 @@
 
             {status === 'ERROR' && (
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3">
-                <p className="text-amber-400 font-bold text-sm">Decodificación asistida requerida</p>
+                <p className="text-amber-400 font-bold text-sm">Problema con la señal o conexión</p>
                 {item?.type === 'LIVE' ? (
                   <button onClick={() => setLiveEngine('FFMPEG_HD')} className="px-4 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold">
-                    🔧 Activar Decodificador HD/FHD
+                    🔧 Decodificar con FFmpeg HD/FHD
                   </button>
                 ) : (
                   <button onClick={() => setUseServerAudioSwitch(true)} className="px-4 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold">

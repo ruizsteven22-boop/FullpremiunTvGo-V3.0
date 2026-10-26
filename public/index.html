@@ -143,6 +143,15 @@
       const [paymentSuccessModal, setPaymentSuccessModal] = useState(false);
       const [deferredPwaPrompt, setDeferredPwaPrompt] = useState(null);
 
+      // FAVORITOS PERSISTENTES
+      const [favorites, setFavorites] = useState(() => {
+        try {
+          return JSON.parse(localStorage.getItem('tvgo_favorites') || '[]');
+        } catch (_) {
+          return [];
+        }
+      });
+
       const [loginMode, setLoginMode] = useState('OFFICIAL');
       const [activeServerHost, setActiveServerHost] = useState(OFFICIAL_SERVER_HOST);
       const [customServerUrl, setCustomServerUrl] = useState('');
@@ -165,9 +174,12 @@
       const [loadingSeriesInfo, setLoadingSeriesInfo] = useState(false);
 
       const [activeItem, setActiveItem] = useState(null);
+      const [focusedIndex, setFocusedIndex] = useState(0);
       const [search, setSearch] = useState('');
       const [loading, setLoading] = useState(false);
       const [loadingStatus, setLoadingStatus] = useState('');
+
+      const listContainerRef = useRef(null);
 
       const syncDeviceWithServer = async (clientTypeOverride, providerLabelOverride, userOverride) => {
         try {
@@ -188,7 +200,7 @@
         } catch (_) {}
       };
 
-      // DETECCIÓN DE RETORNO EXITOSO DE MERCADO PAGO (?status=success)
+      // DETECTAR RETORNO DE MERCADO PAGO (?status=success)
       useEffect(() => {
         const urlParams = new URLSearchParams(window.location.search);
         const status = urlParams.get('status');
@@ -205,6 +217,16 @@
           setDeferredPwaPrompt(e);
         });
       }, []);
+
+      // GUARDAR FAVORITOS
+      const toggleFavorite = (itemId, e) => {
+        if (e) e.stopPropagation();
+        setFavorites(prev => {
+          const updated = prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId];
+          localStorage.setItem('tvgo_favorites', JSON.stringify(updated));
+          return updated;
+        });
+      };
 
       const fetchJsonViaProxy = async (actionUrl) => {
         const res = await fetch(`/proxy?url=${encodeURIComponent(actionUrl)}`);
@@ -357,6 +379,7 @@
       };
 
       const handleSelectItem = async (item) => {
+        if (!item) return;
         if (!deviceAccess.allowed) {
           setShowLicenseModal(true);
           return;
@@ -408,7 +431,9 @@
 
       const filteredItems = useMemo(() => {
         let list = currentCatalog;
-        if (selectedCategory !== 'ALL') {
+        if (selectedCategory === 'FAVORITES') {
+          list = list.filter(item => favorites.includes(item.id));
+        } else if (selectedCategory !== 'ALL') {
           list = list.filter(item => String(item.categoryId) === String(selectedCategory));
         }
         const q = search.trim().toLowerCase();
@@ -416,15 +441,50 @@
           list = list.filter(item => item.title.toLowerCase().includes(q));
         }
         return list;
-      }, [currentCatalog, selectedCategory, search]);
+      }, [currentCatalog, selectedCategory, search, favorites]);
 
       const visibleItems = useMemo(() => filteredItems.slice(0, visibleLimit), [filteredItems, visibleLimit]);
+
+      // CONTROL REMOTO NATIVO (D-PAD: ARRIBA, ABAJO, ENTER, ATRÁS)
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          if (showLicenseModal || showAppsModal || paymentSuccessModal) return;
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setFocusedIndex(prev => {
+              const next = Math.min(prev + 1, visibleItems.length - 1);
+              const el = document.getElementById(`item-${next}`);
+              if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+              return next;
+            });
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setFocusedIndex(prev => {
+              const next = Math.max(prev - 1, 0);
+              const el = document.getElementById(`item-${next}`);
+              if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+              return next;
+            });
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (visibleItems[focusedIndex]) {
+              handleSelectItem(visibleItems[focusedIndex]);
+            }
+          }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [visibleItems, focusedIndex, showLicenseModal, showAppsModal, paymentSuccessModal]);
 
       const handleTabChange = (newTab) => {
         setActiveTab(newTab);
         setSelectedCategory('ALL');
         setSearch('');
         setVisibleLimit(80);
+        setFocusedIndex(0);
         setSeriesEpisodes([]);
         const targetList = newTab === 'LIVE' ? liveCatalog : newTab === 'MOVIES' ? moviesCatalog : seriesCatalog;
         if (targetList.length > 0 && newTab !== 'SERIES') {
@@ -453,7 +513,7 @@
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.3 Pro</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.4 Smart TV</span>
                 </div>
                 <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
               </div>
@@ -632,8 +692,14 @@
             ) : (
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                 <div className="xl:col-span-5 bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-col h-[740px]">
+                  {/* SELECTOR DE GRUPOS CON CATEGORÍA MIS FAVORITOS */}
                   <div className="mb-2.5">
-                    <select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setVisibleLimit(80); }} className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-violet-500/40 text-xs text-white font-semibold focus:outline-none">
+                    <select
+                      value={selectedCategory}
+                      onChange={(e) => { setSelectedCategory(e.target.value); setVisibleLimit(80); setFocusedIndex(0); }}
+                      className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-violet-500/40 text-xs text-white font-semibold focus:outline-none"
+                    >
+                      <option value="FAVORITES" className="text-amber-300 font-bold">⭐ Mis Favoritos ({favorites.length})</option>
                       <option value="ALL">📂 Todos los Grupos ({currentCatalog.length})</option>
                       {currentCategories.map(cat => (
                         <option key={cat.category_id} value={String(cat.category_id)}>📁 {cat.category_name}</option>
@@ -642,7 +708,13 @@
                   </div>
 
                   <div className="mb-3">
-                    <input type="text" placeholder={`Buscar...`} value={search} onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }} className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white" />
+                    <input
+                      type="text"
+                      placeholder="Buscar contenido o canal..."
+                      value={search}
+                      onChange={e => { setSearch(e.target.value); setVisibleLimit(80); setFocusedIndex(0); }}
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                    />
                   </div>
 
                   {activeTab === 'SERIES' && (loadingSeriesInfo || seriesEpisodes.length > 0) && (
@@ -656,41 +728,90 @@
                     </div>
                   )}
 
-                  {/* VISTA EN LISTA PARA CANALES EN VIVO, Y EN CUADRÍCULA (POSTERS) PARA PELÍCULAS Y SERIES */}
-                  <div key={activeTab + '-' + selectedCategory} className="flex-1 overflow-y-auto pr-1">
-                    {activeTab === 'LIVE' ? (
+                  {/* VISTA EN LISTA (TV EN VIVO) O POSTERS (VOD) CON CONTROL REMOTO */}
+                  <div key={activeTab + '-' + selectedCategory} ref={listContainerRef} className="flex-1 overflow-y-auto pr-1">
+                    {visibleItems.length === 0 ? (
+                      <div className="p-8 text-center text-slate-500 text-xs">
+                        {selectedCategory === 'FAVORITES' ? 'No tienes favoritos guardados aún. Toca la estrella ⭐ en cualquier canal para agregarlo.' : 'No se encontraron resultados.'}
+                      </div>
+                    ) : activeTab === 'LIVE' ? (
                       <div className="divide-y divide-slate-800/60">
-                        {visibleItems.map(item => (
-                          <div key={item.id} onClick={() => handleSelectItem(item)} className={`p-3 rounded-xl cursor-pointer transition flex items-center justify-between gap-2 ${activeItem?.id === item.id ? 'bg-violet-600/20 border border-violet-500/40 text-white' : 'hover:bg-slate-800/50 text-slate-300'}`}>
-                            <div className="min-w-0">
-                              <div className="text-xs font-bold truncate">{item.title}</div>
-                              <div className="text-[10px] text-violet-300/80 truncate">📁 {item.categoryName}</div>
+                        {visibleItems.map((item, idx) => {
+                          const isFav = favorites.includes(item.id);
+                          const isFocused = focusedIndex === idx;
+                          return (
+                            <div
+                              key={item.id}
+                              id={`item-${idx}`}
+                              onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
+                              className={`p-3 rounded-xl cursor-pointer transition flex items-center justify-between gap-2 ${
+                                isFocused
+                                  ? 'bg-violet-600/30 ring-2 ring-violet-500 text-white'
+                                  : activeItem?.id === item.id
+                                  ? 'bg-violet-600/20 border border-violet-500/40 text-white'
+                                  : 'hover:bg-slate-800/50 text-slate-300'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={(e) => toggleFavorite(item.id, e)}
+                                  className="text-sm focus:outline-none shrink-0"
+                                  title={isFav ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+                                >
+                                  {isFav ? '⭐' : '☆'}
+                                </button>
+                                <div className="min-w-0">
+                                  <div className="text-xs font-bold truncate">{item.title}</div>
+                                  <div className="text-[10px] text-violet-300/80 truncate">📁 {item.categoryName}</div>
+                                </div>
+                              </div>
+                              <span className="px-2.5 py-1 rounded-lg bg-violet-600/30 text-violet-200 text-[10px] font-semibold shrink-0">Ver</span>
                             </div>
-                            <span className="px-2.5 py-1 rounded-lg bg-violet-600/30 text-violet-200 text-[10px] font-semibold shrink-0">Ver</span>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                        {visibleItems.map(item => (
-                          <div
-                            key={item.id}
-                            onClick={() => handleSelectItem(item)}
-                            className={`group relative rounded-xl overflow-hidden cursor-pointer border transition transform hover:scale-[1.02] ${activeItem?.id === item.id ? 'border-violet-500 shadow-lg shadow-violet-500/20' : 'border-slate-800 hover:border-slate-600'}`}
-                          >
-                            <div className="aspect-[2/3] bg-slate-900 overflow-hidden relative">
-                              {item.logo ? (
-                                <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:opacity-80 transition" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-700">🎬</div>
-                              )}
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent flex flex-col justify-end p-2">
-                                <div className="text-[11px] font-bold text-white line-clamp-2 leading-tight">{item.title}</div>
-                                <div className="text-[9px] text-violet-300 truncate mt-0.5">{item.categoryName}</div>
+                        {visibleItems.map((item, idx) => {
+                          const isFav = favorites.includes(item.id);
+                          const isFocused = focusedIndex === idx;
+                          return (
+                            <div
+                              key={item.id}
+                              id={`item-${idx}`}
+                              onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
+                              className={`group relative rounded-xl overflow-hidden cursor-pointer border transition transform ${
+                                isFocused
+                                  ? 'ring-2 ring-violet-400 scale-[1.03] shadow-lg shadow-violet-500/30 border-violet-400'
+                                  : activeItem?.id === item.id
+                                  ? 'border-violet-500 shadow-lg shadow-violet-500/20'
+                                  : 'border-slate-800 hover:border-slate-600 hover:scale-[1.02]'
+                              }`}
+                            >
+                              <div className="aspect-[2/3] bg-slate-900 overflow-hidden relative">
+                                {item.logo ? (
+                                  <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:opacity-80 transition" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-700">🎬</div>
+                                )}
+                                
+                                <button
+                                  type="button"
+                                  onClick={(e) => toggleFavorite(item.id, e)}
+                                  className="absolute top-1.5 right-1.5 z-10 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-xs backdrop-blur-sm shadow"
+                                >
+                                  {isFav ? '⭐' : '☆'}
+                                </button>
+
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent flex flex-col justify-end p-2">
+                                  <div className="text-[11px] font-bold text-white line-clamp-2 leading-tight">{item.title}</div>
+                                  <div className="text-[9px] text-violet-300 truncate mt-0.5">{item.categoryName}</div>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
 
@@ -709,13 +830,11 @@
             )}
           </main>
 
-          {/* VENTANA EMERGENTE DE CONFIRMACIÓN DE PAGO EXITOSO (?status=success) */}
+          {/* CONFIRMACIÓN DE PAGO EXITOSO (?status=success) */}
           {paymentSuccessModal && (
             <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-[#0B0F19] border border-emerald-500/60 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
-                <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-3xl mx-auto">
-                  🎉
-                </div>
+                <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-3xl mx-auto">🎉</div>
                 <h3 className="text-xl font-extrabold text-white">¡Pago Acreditado con Éxito!</h3>
                 <p className="text-xs text-slate-300 leading-relaxed">
                   Tu suscripción anual ha sido activada en este dispositivo por <strong className="text-emerald-400">365 días completos</strong>. Disfruta de toda la programación sin interrupciones.
@@ -733,7 +852,7 @@
             </div>
           )}
 
-          {/* MODAL DE ACTIVACIÓN Y PAGO ONLINE CON MERCADO PAGO CHILE */}
+          {/* MODAL DE LICENCIA Y PAGO ONLINE CON MERCADO PAGO CHILE */}
           {showLicenseModal && (
             <LicenseModal
               deviceId={deviceId}
@@ -752,7 +871,7 @@
             />
           )}
 
-          {/* MODAL DE INSTALACIÓN EN PLATAFORMAS & DESCARGA APK */}
+          {/* MODAL DE DESCARGA CON CÓDIGO DOWNLOADER 2336838 */}
           {showAppsModal && (
             <PlatformsModal
               deferredPwaPrompt={deferredPwaPrompt}
@@ -763,9 +882,6 @@
       );
     }
 
-    // ========================================================================
-    // MODAL DE LICENCIA CON BOTONES DIRECTOS DE MERCADO PAGO CHILE
-    // ========================================================================
     function LicenseModal({
       deviceId,
       deviceAccess,
@@ -840,7 +956,6 @@
       return (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 lg:p-8 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto">
-            {/* ENCABEZADO */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
                 <h3 className="text-lg font-extrabold text-white">Activar Licencia Anual (365 Días)</h3>
@@ -849,7 +964,6 @@
               <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700 transition">✕ Cerrar</button>
             </div>
 
-            {/* SELECTOR DE MONEDA DE REFERENCIA */}
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-slate-300">Moneda de referencia:</span>
               <select
@@ -863,9 +977,7 @@
               </select>
             </div>
 
-            {/* TARJETAS DE PAGO CON BOTONES DIRECTOS DE MERCADO PAGO */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Tarjeta 1: Clientes Oficiales */}
               <div className="p-4 rounded-2xl bg-violet-950/40 border border-violet-500/50 space-y-3 flex flex-col justify-between">
                 <div>
                   <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-violet-600 text-white">Cliente Oficial Full Premium</span>
@@ -884,7 +996,6 @@
                 </button>
               </div>
 
-              {/* Tarjeta 2: Clientes con lista propia */}
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-700 space-y-3 flex flex-col justify-between">
                 <div>
                   <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">Cliente Lista Propia (M3U / Xtream)</span>
@@ -904,7 +1015,6 @@
               </div>
             </div>
 
-            {/* AVISO DE MEDIOS DE PAGO ACEPTADOS */}
             <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
               <div className="text-xs font-bold text-sky-400">⚡ Pasarela Segura Mercado Pago Chile</div>
               <div className="text-[11px] text-slate-300">
@@ -921,7 +1031,6 @@
               </div>
             )}
 
-            {/* CASILLA DE CÓDIGO MANUAL */}
             <form onSubmit={handleActivate} className="space-y-2 pt-3 border-t border-slate-800">
               <label className="block text-xs font-bold text-slate-300">¿Ya tienes un código generado previamente?</label>
               <div className="flex gap-2">
@@ -943,7 +1052,6 @@
               </div>
             </form>
 
-            {/* CANAL DE WHATSAPP DIRECTO */}
             <div className="pt-2 text-center">
               <a
                 href={`https://wa.me/56979429123?text=${encodeURIComponent(`Hola! Quiero consultar por la activación de Full Premium TvGo para mi Dispositivo ID: ${deviceId}`)}`}
@@ -959,9 +1067,6 @@
       );
     }
 
-    // ========================================================================
-    // MODAL DE DESCARGA E INSTALACIÓN (CON DESCARGA DIRECTA DE APK)
-    // ========================================================================
     function PlatformsModal({ deferredPwaPrompt, onClose }) {
       const handleInstallPwa = async () => {
         if (deferredPwaPrompt) {
@@ -980,27 +1085,42 @@
               <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold hover:bg-slate-700">✕</button>
             </div>
 
+            {/* CAJA DESTACADA DE DOWNLOADER PARA SMART TV Y TV BOX */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-orange-600/20 via-amber-600/20 to-violet-600/20 border border-orange-500/40 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-extrabold text-orange-300 text-sm flex items-center gap-1.5">
+                  📺 Instalación en TV Box / Android TV (Downloader)
+                </span>
+                <span className="px-2 py-0.5 rounded bg-orange-500/30 text-orange-200 text-[10px] font-bold">Rápido</span>
+              </div>
+              <p className="text-slate-300 text-xs">
+                Abre la aplicación <strong>Downloader</strong> en tu televisor e ingresa este código numérico:
+              </p>
+              <div className="p-3 bg-slate-950 rounded-xl border border-orange-500/30 text-center">
+                <div className="text-2xl font-mono font-extrabold text-orange-400 tracking-wider">2336838</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Escribe 2336838 y presiona "Go" para descargar e instalar</div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Opción 1: Smart TV y Android APK */}
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 flex flex-col justify-between">
                 <div>
-                  <div className="font-bold text-white text-sm">📺 Android TV / Smart TV / TV Box</div>
-                  <p className="text-slate-400 mt-1">Descarga directa del instalador nativo APK para televisores y dispositivos Android.</p>
+                  <div className="font-bold text-white text-sm">📱 Android APK Directo</div>
+                  <p className="text-slate-400 mt-1">Descarga directa del instalador nativo APK para celulares o tablets Android.</p>
                 </div>
                 <a
                   href="/app.apk"
                   download="FullPremiumTvGo.apk"
                   className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-center block shadow transition"
                 >
-                  📥 Descargar APK Directo
+                  📥 Descargar APK
                 </a>
               </div>
 
-              {/* Opción 2: WebApp / PC */}
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 flex flex-col justify-between">
                 <div>
-                  <div className="font-bold text-white text-sm">💻 PC / Teléfono (PWA)</div>
-                  <p className="text-slate-400 mt-1">Instala la aplicación web ligera sin ocupar espacio ni requerir descargas pesadas.</p>
+                  <div className="font-bold text-white text-sm">💻 PC / WebApp (PWA)</div>
+                  <p className="text-slate-400 mt-1">Instala la aplicación web ultraligera sin ocupar espacio en disco.</p>
                 </div>
                 <button
                   onClick={handleInstallPwa}
@@ -1009,10 +1129,6 @@
                   ⚡ Instalar en este Equipo
                 </button>
               </div>
-            </div>
-
-            <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800/80 text-[11px] text-slate-400">
-              💡 <strong>Tip para televisores:</strong> También puedes usar la aplicación <strong>Downloader</strong> escribiendo <code className="text-violet-300 font-mono">app.fullpremiumtvcl.com/app.apk</code> para descargar e instalar automáticamente en segundos.
             </div>
           </div>
         </div>

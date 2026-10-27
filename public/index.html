@@ -1189,12 +1189,13 @@
       const retryCountRef = useRef(0);
 
       const [status, setStatus] = useState('IDLE');
+      const [needsUnmute, setNeedsUnmute] = useState(false);
+
       const [audioTracks, setAudioTracks] = useState([
         { index: 0, label: 'Pista 1 — Principal' },
         { index: 1, label: 'Pista 2 — Secundario' }
       ]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
-
       const [subtitleTracks, setSubtitleTracks] = useState([]);
       const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
@@ -1202,6 +1203,7 @@
         setSelectedAudioTrack(0);
         setSubtitleTracks([]);
         setActiveSubtitle('OFF');
+        setNeedsUnmute(false);
         retryCountRef.current = 0;
 
         if (item?.type === 'MOVIE' && item?.streamId && serverHost) {
@@ -1225,12 +1227,18 @@
       const startPlayback = () => {
         if (!item?.streamUrl || !videoRef.current) return;
         setStatus('LOADING');
+        setNeedsUnmute(false);
         const video = videoRef.current;
 
+        // Limpiar instancia anterior
         if (playerRef.current) {
-          try { if (playerRef.current.destroy) playerRef.current.destroy(); } catch (_) {}
+          try { playerRef.current.destroy(); } catch (_) {}
           playerRef.current = null;
         }
+
+        // Configuración inicial de audio: Siempre con sonido y al 100%
+        video.muted = false;
+        video.volume = 1.0;
 
         const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
 
@@ -1238,7 +1246,7 @@
           if (window.mpegts && window.mpegts.isSupported()) {
             try {
               const player = window.mpegts.createPlayer({
-                type: 'mpegts',
+                type: 'm2ts',
                 isLive: true,
                 url: directProxyUrl,
                 cors: true
@@ -1251,7 +1259,7 @@
                 autoCleanupSourceBuffer: true,
                 autoCleanupMaxBackwardDuration: 30,
                 autoCleanupMinBackwardDuration: 15,
-                maxBufferLength: 6,
+                maxBufferLength: 8,
                 seekType: 'range'
               });
 
@@ -1259,23 +1267,31 @@
               player.attachMediaElement(video);
               player.load();
 
-              const p = player.play();
-              if (p && p.catch) {
-                p.catch(() => {
+              const playPromise = player.play();
+              if (playPromise && playPromise.catch) {
+                playPromise.catch((err) => {
+                  // Si el navegador bloqueó el autoplay con sonido, arrancamos temporalmente muted y mostramos botón para activar audio
+                  console.warn('Autoplay con audio restringido por el navegador:', err);
                   video.muted = true;
+                  setNeedsUnmute(true);
                   player.play().catch(() => {});
                 });
               }
 
-              player.on(window.mpegts.Events.ERROR, () => {
+              // Solo marcar error si es fatal y no hay fotogramas corriendo
+              player.on(window.mpegts.Events.ERROR, (errType, errDetail) => {
+                if (video.currentTime > 0 && !video.paused && !video.ended) {
+                  return; // El video está corriendo, ignorar advertencia
+                }
                 if (retryCountRef.current < 2) {
                   retryCountRef.current += 1;
-                  setTimeout(startPlayback, 1200);
+                  setTimeout(startPlayback, 1500);
                 } else {
                   setStatus('ERROR');
                 }
               });
-            } catch (_) {
+            } catch (err) {
+              console.error('Error inicializando mpegts:', err);
               setStatus('ERROR');
             }
           } else {
@@ -1301,13 +1317,21 @@
             }
           }).catch(() => {
             video.muted = true;
+            setNeedsUnmute(true);
             video.play().catch(() => setStatus('ERROR'));
           });
         }
 
+        // Eventos nativos del video para ocultar cualquier pantalla de carga/error
         video.onplaying = () => {
           setStatus('PLAYING');
           retryCountRef.current = 0;
+        };
+
+        video.onerror = () => {
+          if (video.currentTime === 0) {
+            setStatus('ERROR');
+          }
         };
       };
 
@@ -1315,11 +1339,19 @@
         startPlayback();
         return () => {
           if (playerRef.current) {
-            try { if (playerRef.current.destroy) playerRef.current.destroy(); } catch (_) {}
+            try { playerRef.current.destroy(); } catch (_) {}
             playerRef.current = null;
           }
         };
       }, [item, selectedAudioTrack]);
+
+      const handleUnmuteClick = () => {
+        if (videoRef.current) {
+          videoRef.current.muted = false;
+          videoRef.current.volume = 1.0;
+          setNeedsUnmute(false);
+        }
+      };
 
       const handleAudioChange = (newIndex) => {
         const idx = Number(newIndex);
@@ -1425,15 +1457,25 @@
               ))}
             </video>
 
+            {/* BOTÓN FLOTANTE PARA ACTIVAR SONIDO SI EL NAVEGADOR LO SILENCIÓ */}
+            {needsUnmute && (
+              <button
+                onClick={handleUnmuteClick}
+                className="absolute top-4 right-4 z-20 px-3.5 py-2 rounded-xl bg-violet-600/90 hover:bg-violet-500 text-white font-bold text-xs shadow-2xl flex items-center gap-2 animate-bounce"
+              >
+                <span>🔊 Activar Sonido</span>
+              </button>
+            )}
+
             {status === 'LOADING' && (
               <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                <span className="text-xs text-violet-300 font-semibold">Cargando: {item?.title}</span>
+                <span className="text-xs text-violet-300 font-semibold">Cargando transmisión...</span>
               </div>
             )}
 
             {status === 'ERROR' && (
-              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3">
+              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3 z-10">
                 <p className="text-amber-400 font-bold text-sm">Problema con la señal del canal</p>
                 <button
                   onClick={() => { retryCountRef.current = 0; startPlayback(); }}

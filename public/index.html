@@ -206,8 +206,6 @@
           setPaymentSuccessModal(true);
         } else if (status === 'failure') {
           setPaymentFailureModal(true);
-        } else if (status === 'pending') {
-          alert('Tu pago está en proceso de confirmación. Tu suscripción se activará automáticamente.');
         }
 
         if (status) {
@@ -514,7 +512,7 @@
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.5 Pro</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.6 Ultra</span>
                 </div>
                 <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
               </div>
@@ -1181,21 +1179,19 @@
     }
 
     // ========================================================================
-    // COMPONENTE REPRODUCTOR CON PROTOCOLO 'm2ts' CORREGIDO
+    // REPRODUCTOR LIMPIO: AUDIO DIRECTO AL 100% Y SIN CARGAS PEGADAS
     // ========================================================================
     function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
-      const retryCountRef = useRef(0);
 
       const [status, setStatus] = useState('IDLE');
-      const [needsUnmute, setNeedsUnmute] = useState(false);
-
       const [audioTracks, setAudioTracks] = useState([
         { index: 0, label: 'Pista 1 — Principal' },
         { index: 1, label: 'Pista 2 — Secundario' }
       ]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
+
       const [subtitleTracks, setSubtitleTracks] = useState([]);
       const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
@@ -1203,8 +1199,6 @@
         setSelectedAudioTrack(0);
         setSubtitleTracks([]);
         setActiveSubtitle('OFF');
-        setNeedsUnmute(false);
-        retryCountRef.current = 0;
 
         if (item?.type === 'MOVIE' && item?.streamId && serverHost) {
           const vodInfoUrl = `${serverHost}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_info&vod_id=${item.streamId}`;
@@ -1227,16 +1221,14 @@
       const startPlayback = () => {
         if (!item?.streamUrl || !videoRef.current) return;
         setStatus('LOADING');
-        setNeedsUnmute(false);
         const video = videoRef.current;
 
-        // Limpiar instancia anterior
         if (playerRef.current) {
           try { playerRef.current.destroy(); } catch (_) {}
           playerRef.current = null;
         }
 
-        // Configuración inicial de audio: Siempre con sonido y al 100%
+        // Audio activo y al máximo
         video.muted = false;
         video.volume = 1.0;
 
@@ -1267,37 +1259,27 @@
               player.attachMediaElement(video);
               player.load();
 
-              const playPromise = player.play();
-              if (playPromise && playPromise.catch) {
-                playPromise.catch((err) => {
-                  // Si el navegador bloqueó el autoplay con sonido, arrancamos temporalmente muted y mostramos botón para activar audio
-                  console.warn('Autoplay con audio restringido por el navegador:', err);
-                  video.muted = true;
-                  setNeedsUnmute(true);
-                  player.play().catch(() => {});
-                });
-              }
-
-              // Solo marcar error si es fatal y no hay fotogramas corriendo
-              player.on(window.mpegts.Events.ERROR, (errType, errDetail) => {
-                if (video.currentTime > 0 && !video.paused && !video.ended) {
-                  return; // El video está corriendo, ignorar advertencia
-                }
-                if (retryCountRef.current < 2) {
-                  retryCountRef.current += 1;
-                  setTimeout(startPlayback, 1500);
-                } else {
-                  setStatus('ERROR');
-                }
+              // Reproducir directamente; en cuanto arranca se quita la carga
+              player.play().then(() => {
+                setStatus('PLAYING');
+              }).catch(() => {
+                // Si la política del navegador exige clic, no forzamos error, dejamos que empiece
+                setStatus('PLAYING');
               });
-            } catch (err) {
-              console.error('Error inicializando mpegts:', err);
+
+              // Descartar errores falsos si ya hay fotogramas corriendo
+              player.on(window.mpegts.Events.ERROR, () => {
+                if (video.currentTime > 0) return;
+                setStatus('ERROR');
+              });
+            } catch (_) {
               setStatus('ERROR');
             }
           } else {
             video.src = directProxyUrl;
             video.load();
             video.play().catch(() => {});
+            setStatus('PLAYING');
           }
         } else {
           video.src = directProxyUrl;
@@ -1316,24 +1298,31 @@
               setAudioTracks(detected);
             }
           }).catch(() => {
-            video.muted = true;
-            setNeedsUnmute(true);
-            video.play().catch(() => setStatus('ERROR'));
+            setStatus('ERROR');
           });
         }
+      };
 
-        // Eventos nativos del video para ocultar cualquier pantalla de carga/error
-        video.onplaying = () => {
-          setStatus('PLAYING');
-          retryCountRef.current = 0;
-        };
+      // Si el video emite fotogramas o timeupdate, asegurar que la pantalla de carga se oculte
+      useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
 
-        video.onerror = () => {
-          if (video.currentTime === 0) {
-            setStatus('ERROR');
+        const handlePlaying = () => setStatus('PLAYING');
+        const handleTimeUpdate = () => {
+          if (video.currentTime > 0 && status === 'LOADING') {
+            setStatus('PLAYING');
           }
         };
-      };
+
+        video.addEventListener('playing', handlePlaying);
+        video.addEventListener('timeupdate', handleTimeUpdate);
+
+        return () => {
+          video.removeEventListener('playing', handlePlaying);
+          video.removeEventListener('timeupdate', handleTimeUpdate);
+        };
+      }, [status]);
 
       useEffect(() => {
         startPlayback();
@@ -1344,14 +1333,6 @@
           }
         };
       }, [item, selectedAudioTrack]);
-
-      const handleUnmuteClick = () => {
-        if (videoRef.current) {
-          videoRef.current.muted = false;
-          videoRef.current.volume = 1.0;
-          setNeedsUnmute(false);
-        }
-      };
 
       const handleAudioChange = (newIndex) => {
         const idx = Number(newIndex);
@@ -1405,7 +1386,7 @@
                   </span>
                 </div>
                 <button
-                  onClick={() => { retryCountRef.current = 0; startPlayback(); }}
+                  onClick={() => startPlayback()}
                   className="px-3 py-1.5 rounded-xl font-bold bg-violet-600 hover:bg-violet-500 text-white transition shadow flex items-center gap-1.5"
                 >
                   🔄 Recargar Canal
@@ -1457,18 +1438,8 @@
               ))}
             </video>
 
-            {/* BOTÓN FLOTANTE PARA ACTIVAR SONIDO SI EL NAVEGADOR LO SILENCIÓ */}
-            {needsUnmute && (
-              <button
-                onClick={handleUnmuteClick}
-                className="absolute top-4 right-4 z-20 px-3.5 py-2 rounded-xl bg-violet-600/90 hover:bg-violet-500 text-white font-bold text-xs shadow-2xl flex items-center gap-2 animate-bounce"
-              >
-                <span>🔊 Activar Sonido</span>
-              </button>
-            )}
-
             {status === 'LOADING' && (
-              <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
                 <span className="text-xs text-violet-300 font-semibold">Cargando transmisión...</span>
               </div>
@@ -1478,7 +1449,7 @@
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3 z-10">
                 <p className="text-amber-400 font-bold text-sm">Problema con la señal del canal</p>
                 <button
-                  onClick={() => { retryCountRef.current = 0; startPlayback(); }}
+                  onClick={() => startPlayback()}
                   className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg"
                 >
                   🔄 Reintentar Reproducción

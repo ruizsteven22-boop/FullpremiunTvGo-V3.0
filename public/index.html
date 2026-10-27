@@ -1235,7 +1235,7 @@
         if (item.type === 'LIVE') {
           if (window.mpegts && window.mpegts.isSupported()) {
             try {
-              // CONFIGURACIÓN DE ALTA FLUIDEZ SIN CORTES PARA CANALES FHD
+              // BÚFER DE 1.5 MB Y ESTABILIDAD PARA CANALES FHD (8-10 MBPS)
               const player = window.mpegts.createPlayer({
                 type: 'm2ts',
                 isLive: true,
@@ -1244,22 +1244,27 @@
               }, {
                 enableWorker: true,
                 lazyLoad: false,
-                enableStashBuffer: false, // Entrega directa e inmediata de fotogramas sin acumular demoras
-                liveBufferLatencyChasing: false, // Desactiva saltos agresivos que causan congelamiento y pantallas negras
+                enableStashBuffer: true,
+                stashInitialSize: 1536 * 1024, // 1.5 MB de colchón inicial para evitar microcortes
+                liveBufferLatencyChasing: false, // Desactivado para que no salte cuadros bruscamente
                 autoCleanupSourceBuffer: true,
                 autoCleanupMaxBackwardDuration: 30,
-                autoCleanupMinBackwardDuration: 15
+                autoCleanupMinBackwardDuration: 15,
+                maxBufferLength: 15
               });
 
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
 
-              player.play().then(() => {
-                setStatus('PLAYING');
-              }).catch(() => {
-                setStatus('PLAYING');
-              });
+              const playPromise = player.play();
+              if (playPromise && playPromise.catch) {
+                playPromise.catch(() => {
+                  // Si las políticas del navegador restringen el arranque con sonido
+                  video.muted = true;
+                  player.play().catch(() => {});
+                });
+              }
 
               player.on(window.mpegts.Events.ERROR, () => {
                 if (video.currentTime > 0) return;
@@ -1296,25 +1301,40 @@
         }
       };
 
+      // SINCRONIZADOR AUTOMÁTICO DE LÍNEA DE TIEMPO (DESCONGELADOR DE 0:00)
       useEffect(() => {
         const video = videoRef.current;
         if (!video) return;
 
-        const handlePlaying = () => setStatus('PLAYING');
-        const handleTimeUpdate = () => {
-          if (video.currentTime > 0 && status === 'LOADING') {
+        const checkAndUnfreeze = () => {
+          if (video.buffered && video.buffered.length > 0) {
+            const bStart = video.buffered.start(0);
+            // Si el stream empezó en un segundo adelantado (ej. 1.5s) y el video está en 0:00
+            if (video.currentTime < bStart) {
+              video.currentTime = bStart + 0.05;
+            }
+          }
+          if (video.paused && video.readyState >= 2) {
+            video.play().catch(() => {});
+          }
+          if (video.currentTime > 0) {
             setStatus('PLAYING');
           }
         };
 
-        video.addEventListener('playing', handlePlaying);
-        video.addEventListener('timeupdate', handleTimeUpdate);
+        video.addEventListener('loadeddata', checkAndUnfreeze);
+        video.addEventListener('canplay', checkAndUnfreeze);
+        video.addEventListener('timeupdate', checkAndUnfreeze);
+        video.addEventListener('waiting', checkAndUnfreeze);
+        video.addEventListener('playing', () => setStatus('PLAYING'));
 
         return () => {
-          video.removeEventListener('playing', handlePlaying);
-          video.removeEventListener('timeupdate', handleTimeUpdate);
+          video.removeEventListener('loadeddata', checkAndUnfreeze);
+          video.removeEventListener('canplay', checkAndUnfreeze);
+          video.removeEventListener('timeupdate', checkAndUnfreeze);
+          video.removeEventListener('waiting', checkAndUnfreeze);
         };
-      }, [status]);
+      }, []);
 
       useEffect(() => {
         startPlayback();

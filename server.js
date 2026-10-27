@@ -572,7 +572,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // --------------------------------------------------------------------------
-  // 6. PROXY DE STREAMING Y API XTREAM RESILIENTE (/proxy)
+  // 6. PROXY DE STREAMING Y API XTREAM RESILIENTE (/proxy) CON SEGUIMIENTO 302
   // --------------------------------------------------------------------------
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
@@ -582,45 +582,62 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    try {
-      const parsedTarget = url.parse(targetUrl);
-      const client = parsedTarget.protocol === 'https:' ? https : http;
+    const proxyStream = (currentUrl, redirectCount = 0) => {
+      if (redirectCount > 5) {
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end('Demasiadas redirecciones en la fuente');
+        return;
+      }
 
-      const proxyReq = client.request(targetUrl, {
-        method: req.method,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          ...(req.headers.range ? { 'Range': req.headers.range } : {})
-        }
-      }, (proxyRes) => {
-        const responseHeaders = {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': '*',
-          'Content-Type': proxyRes.headers['content-type'] || 'application/octet-stream'
-        };
+      try {
+        const parsedTarget = url.parse(currentUrl);
+        const client = parsedTarget.protocol === 'https:' ? https : http;
 
-        if (proxyRes.headers['content-length']) responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
-        if (proxyRes.headers['content-range']) responseHeaders['Content-Range'] = proxyRes.headers['content-range'];
-        if (proxyRes.headers['accept-ranges']) responseHeaders['Accept-Ranges'] = proxyRes.headers['accept-ranges'];
+        const proxyReq = client.request(currentUrl, {
+          method: req.method,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            ...(req.headers.range ? { 'Range': req.headers.range } : {})
+          }
+        }, (proxyRes) => {
+          // Si el servidor IPTV redirige a un balanceador (301, 302, 307, 308)
+          if ([301, 302, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
+            const nextUrl = url.resolve(currentUrl, proxyRes.headers.location);
+            return proxyStream(nextUrl, redirectCount + 1);
+          }
 
-        res.writeHead(proxyRes.statusCode, responseHeaders);
-        proxyRes.pipe(res);
-      });
+          const responseHeaders = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': '*',
+            'Content-Type': proxyRes.headers['content-type'] || 'video/mp2t'
+          };
 
-      proxyReq.on('error', (err) => {
+          if (proxyRes.headers['content-length']) responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
+          if (proxyRes.headers['content-range']) responseHeaders['Content-Range'] = proxyRes.headers['content-range'];
+          if (proxyRes.headers['accept-ranges']) responseHeaders['Accept-Ranges'] = proxyRes.headers['accept-ranges'];
+
+          res.writeHead(proxyRes.statusCode, responseHeaders);
+          proxyRes.pipe(res);
+        });
+
+        proxyReq.on('error', (err) => {
+          if (!res.headersSent) {
+            res.writeHead(502, { 'Content-Type': 'text/plain' });
+            res.end('Error al conectar con la fuente de transmisión: ' + err.message);
+          }
+        });
+
+        req.pipe(proxyReq);
+      } catch (err) {
         if (!res.headersSent) {
-          res.writeHead(502, { 'Content-Type': 'text/plain' });
-          res.end('Error al conectar con la fuente de transmisión: ' + err.message);
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Error interno del proxy: ' + err.message);
         }
-      });
+      }
+    };
 
-      req.pipe(proxyReq);
-      return;
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Error interno del proxy: ' + err.message);
-      return;
-    }
+    proxyStream(targetUrl);
+    return;
   }
 
   // --------------------------------------------------------------------------

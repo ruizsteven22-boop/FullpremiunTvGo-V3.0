@@ -572,7 +572,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // --------------------------------------------------------------------------
-  // 6. PROXY DE STREAMING Y API XTREAM RESILIENTE (/proxy) CON SEGUIMIENTO 302
+  // 6. PROXY DE STREAMING Y API XTREAM RESILIENTE (/proxy) FLUIDO EN TIEMPO REAL
   // --------------------------------------------------------------------------
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
@@ -600,7 +600,6 @@ const server = http.createServer(async (req, res) => {
             ...(req.headers.range ? { 'Range': req.headers.range } : {})
           }
         }, (proxyRes) => {
-          // Si el servidor IPTV redirige a un balanceador (301, 302, 307, 308)
           if ([301, 302, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
             const nextUrl = url.resolve(currentUrl, proxyRes.headers.location);
             return proxyStream(nextUrl, redirectCount + 1);
@@ -609,10 +608,17 @@ const server = http.createServer(async (req, res) => {
           const responseHeaders = {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': '*',
-            'Content-Type': proxyRes.headers['content-type'] || 'video/mp2t'
+            'Content-Type': proxyRes.headers['content-type'] || 'video/mp2t',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+            'X-Accel-Buffering': 'no' // DESACTIVA EL BÚFER DE HOSTINGER/NGINX PARA STREAMING FLUIDO
           };
 
-          if (proxyRes.headers['content-length']) responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
+          const isLiveStream = currentUrl.includes('/live/') || currentUrl.endsWith('.ts');
+          if (proxyRes.headers['content-length'] && !isLiveStream) {
+            responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
+          }
           if (proxyRes.headers['content-range']) responseHeaders['Content-Range'] = proxyRes.headers['content-range'];
           if (proxyRes.headers['accept-ranges']) responseHeaders['Accept-Ranges'] = proxyRes.headers['accept-ranges'];
 

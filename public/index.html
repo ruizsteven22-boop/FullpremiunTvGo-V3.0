@@ -1184,7 +1184,6 @@
     function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
-      const unfreezeIntervalRef = useRef(null);
 
       const [status, setStatus] = useState('IDLE');
       const [audioTracks, setAudioTracks] = useState([
@@ -1192,7 +1191,6 @@
         { index: 1, label: 'Pista 2 — Secundario' }
       ]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
-
       const [subtitleTracks, setSubtitleTracks] = useState([]);
       const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
@@ -1224,11 +1222,6 @@
         setStatus('LOADING');
         const video = videoRef.current;
 
-        if (unfreezeIntervalRef.current) {
-          clearInterval(unfreezeIntervalRef.current);
-          unfreezeIntervalRef.current = null;
-        }
-
         if (playerRef.current) {
           try { playerRef.current.destroy(); } catch (_) {}
           playerRef.current = null;
@@ -1242,6 +1235,7 @@
         if (item.type === 'LIVE') {
           if (window.mpegts && window.mpegts.isSupported()) {
             try {
+              // CONFIGURACIÓN DE ALTA FLUIDEZ SIN CORTES PARA CANALES FHD
               const player = window.mpegts.createPlayer({
                 type: 'm2ts',
                 isLive: true,
@@ -1250,45 +1244,26 @@
               }, {
                 enableWorker: true,
                 lazyLoad: false,
-                enableStashBuffer: false, // Flujo directo sin retención que ahogue el bitrate FHD
-                liveBufferLatencyChasing: true, // Persigue la emisión en directo
-                liveBufferLatencyMaxLatency: 2.0,
-                liveBufferLatencyMinRemain: 0.3,
+                enableStashBuffer: false, // Entrega directa e inmediata de fotogramas sin acumular demoras
+                liveBufferLatencyChasing: false, // Desactiva saltos agresivos que causan congelamiento y pantallas negras
                 autoCleanupSourceBuffer: true,
-                autoCleanupMaxBackwardDuration: 20,
-                autoCleanupMinBackwardDuration: 10,
-                fixAudioTimestampGap: true
+                autoCleanupMaxBackwardDuration: 30,
+                autoCleanupMinBackwardDuration: 15
               });
 
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
 
-              player.play().catch(() => {});
-
-              // DESTRABADOR DE 0:00: Si el reproductor tiene datos en el búfer pero se quedó pegado en 0:00,
-              // forzamos un salto inmediato al borde del directo para que los fotogramas corran
-              unfreezeIntervalRef.current = setInterval(() => {
-                if (!videoRef.current) return;
-                const v = videoRef.current;
-                if (v.buffered && v.buffered.length > 0) {
-                  const end = v.buffered.end(v.buffered.length - 1);
-                  const start = v.buffered.start(0);
-
-                  // Si está detenido en 0:00 o fuera del búfer de transmisión
-                  if (v.currentTime < start || (v.currentTime === 0 && end > 0.3)) {
-                    v.currentTime = Math.max(start, end - 0.3);
-                  }
-                  if (v.currentTime > 0) {
-                    setStatus('PLAYING');
-                    clearInterval(unfreezeIntervalRef.current);
-                    unfreezeIntervalRef.current = null;
-                  }
-                }
-              }, 400);
+              player.play().then(() => {
+                setStatus('PLAYING');
+              }).catch(() => {
+                setStatus('PLAYING');
+              });
 
               player.on(window.mpegts.Events.ERROR, () => {
                 if (video.currentTime > 0) return;
+                setStatus('ERROR');
               });
             } catch (_) {
               setStatus('ERROR');
@@ -1344,10 +1319,6 @@
       useEffect(() => {
         startPlayback();
         return () => {
-          if (unfreezeIntervalRef.current) {
-            clearInterval(unfreezeIntervalRef.current);
-            unfreezeIntervalRef.current = null;
-          }
           if (playerRef.current) {
             try { playerRef.current.destroy(); } catch (_) {}
             playerRef.current = null;
@@ -1460,7 +1431,7 @@
             </video>
 
             {status === 'LOADING' && (
-              <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
                 <span className="text-xs text-violet-300 font-semibold">Cargando transmisión...</span>
               </div>

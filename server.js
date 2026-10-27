@@ -4,23 +4,20 @@ const url = require('url');
 const fs = require('fs');
 const path = require('path');
 
-// Módulo de correo para envío de comprobantes de activación
 let nodemailer = null;
 try {
   nodemailer = require('nodemailer');
 } catch (_) {}
 
 // ==========================================
-// CONFIGURACIÓN Y CREDENCIALES PRODUCTIVAS
+// CONFIGURACIÓN Y CREDENCIALES
 // ==========================================
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'FullPremium2026*';
 
-// Credenciales productivas Mercado Pago Chile
 const MP_PUBLIC_KEY = process.env.MP_PUBLIC_KEY || 'APP_USR-5b9a95ea-4ccd-42b5-a510-59a2fd15932e';
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || 'APP_USR-1407563312667634-102018-ccb148d6ba9cc8b373fd0f32fa70945c-1567019351';
 
-// Base de datos persistente en servidor
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -29,14 +26,13 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// Configuración SMTP Hostinger para comprobantes por correo
 const mailTransporter = nodemailer ? nodemailer.createTransport({
   host: 'smtp.hostinger.com',
   port: 465,
   secure: true,
   auth: {
     user: 'activaciones@app.fullpremiumtvcl.com',
-    pass: process.env.EMAIL_PASS || 'Lio061624@'
+    pass: process.env.EMAIL_PASS || 'Activacion2026*'
   }
 }) : null;
 
@@ -76,7 +72,6 @@ async function sendActivationEmail(toEmail, deviceId, paymentId, tier) {
   }
 }
 
-// Estructura por defecto de la base de datos
 const defaultDb = {
   settings: {
     priceOfficialCLP: 4000,
@@ -169,7 +164,6 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
-// Llamada a la API de Mercado Pago
 function callMercadoPago(apiPath, method = 'GET', data = null) {
   return new Promise((resolve, reject) => {
     const bodyStr = data ? JSON.stringify(data) : '';
@@ -224,9 +218,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // --------------------------------------------------------------------------
-  // 1. SINCRONIZACIÓN DE DISPOSITIVO (/api/device/init)
-  // --------------------------------------------------------------------------
+  // 1. INICIALIZACIÓN DE DISPOSITIVO
   if (pathname === '/api/device/init' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -286,9 +278,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 2. CREACIÓN DE PREFERENCIA DE PAGO MERCADO PAGO (/api/payment/create-preference)
-  // --------------------------------------------------------------------------
+  // 2. CREACIÓN DE PREFERENCIA MERCADO PAGO
   if (pathname === '/api/payment/create-preference' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -354,9 +344,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 3. WEBHOOK DE MERCADO PAGO (/api/webhook/mercadopago)
-  // --------------------------------------------------------------------------
+  // 3. WEBHOOK MERCADO PAGO
   if (pathname === '/api/webhook/mercadopago') {
     try {
       let paymentId = parsedUrl.query['data.id'] || parsedUrl.query.id;
@@ -399,7 +387,6 @@ const server = http.createServer(async (req, res) => {
             saveDb(db);
             console.log(`[PAGO APROBADO] Dispositivo ${targetDeviceId} activado por 365 días.`);
 
-            // Despachar comprobante formal por correo
             sendActivationEmail(payerEmail, targetDeviceId, paymentId, tier);
           }
         }
@@ -416,9 +403,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 4. CANJE MANUAL DE CÓDIGOS DE LICENCIA (/api/license/activate)
-  // --------------------------------------------------------------------------
+  // 4. CANJE MANUAL DE CÓDIGOS
   if (pathname === '/api/license/activate' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -472,9 +457,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 5. PANEL DE CONTROL PRIVADO — ENDPOINTS ADMINISTRATIVOS
-  // --------------------------------------------------------------------------
+  // 5. PANEL DE CONTROL PRIVADO
   if (pathname === '/api/admin/overview' && req.method === 'GET') {
     const adminKey = req.headers['x-admin-key'];
     if (adminKey !== ADMIN_PASSWORD) {
@@ -487,12 +470,10 @@ const server = http.createServer(async (req, res) => {
       computed: computeAccess(dev, db.settings)
     }));
 
-    const licenseList = Object.values(db.licenses);
-
     return sendJson(res, 200, {
       settings: db.settings,
       devices: deviceList,
-      licenses: licenseList
+      licenses: Object.values(db.licenses)
     });
   }
 
@@ -571,9 +552,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 6. PROXY DE STREAMING Y API XTREAM RESILIENTE (/proxy) FLUIDO EN TIEMPO REAL
-  // --------------------------------------------------------------------------
+  // 6. PROXY DE STREAMING CON CERO LATENCIA Y SOPORTE FLUIDO PARA CANALES EN VIVO
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
     if (!targetUrl) {
@@ -585,7 +564,7 @@ const server = http.createServer(async (req, res) => {
     const proxyStream = (currentUrl, redirectCount = 0) => {
       if (redirectCount > 5) {
         res.writeHead(502, { 'Content-Type': 'text/plain' });
-        res.end('Demasiadas redirecciones en la fuente');
+        res.end('Demasiadas redirecciones');
         return;
       }
 
@@ -597,13 +576,17 @@ const server = http.createServer(async (req, res) => {
           method: req.method,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Connection': 'keep-alive',
             ...(req.headers.range ? { 'Range': req.headers.range } : {})
           }
         }, (proxyRes) => {
+          // Seguir redirecciones 301, 302, 307, 308 automáticamente
           if ([301, 302, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
             const nextUrl = url.resolve(currentUrl, proxyRes.headers.location);
             return proxyStream(nextUrl, redirectCount + 1);
           }
+
+          const isLiveStream = currentUrl.includes('/live/') || currentUrl.endsWith('.ts');
 
           const responseHeaders = {
             'Access-Control-Allow-Origin': '*',
@@ -612,10 +595,10 @@ const server = http.createServer(async (req, res) => {
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'Expires': '0',
-            'X-Accel-Buffering': 'no' // DESACTIVA EL BÚFER DE HOSTINGER/NGINX PARA STREAMING FLUIDO
+            'X-Accel-Buffering': 'no' // Desactiva almacenamiento en búfer de Nginx
           };
 
-          const isLiveStream = currentUrl.includes('/live/') || currentUrl.endsWith('.ts');
+          // Nunca enviar Content-Length en streams en vivo para evitar corte de descarga
           if (proxyRes.headers['content-length'] && !isLiveStream) {
             responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
           }
@@ -629,7 +612,7 @@ const server = http.createServer(async (req, res) => {
         proxyReq.on('error', (err) => {
           if (!res.headersSent) {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
-            res.end('Error al conectar con la fuente de transmisión: ' + err.message);
+            res.end('Error de transmisión: ' + err.message);
           }
         });
 
@@ -637,7 +620,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Error interno del proxy: ' + err.message);
+          res.end('Error de proxy: ' + err.message);
         }
       }
     };
@@ -646,9 +629,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // --------------------------------------------------------------------------
-  // 7. SERVIDOR DE ARCHIVOS ESTÁTICOS Y DESCARGA DIRECTA DE APK
-  // --------------------------------------------------------------------------
+  // 7. ARCHIVOS ESTÁTICOS Y APK
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
 
   fs.stat(filePath, (err, stats) => {

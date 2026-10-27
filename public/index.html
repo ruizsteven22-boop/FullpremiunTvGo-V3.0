@@ -512,7 +512,7 @@
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.7 RealTime</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v6.0 Stable</span>
                 </div>
                 <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
               </div>
@@ -1179,18 +1179,20 @@
     }
 
     // ========================================================================
-    // REPRODUCTOR CON DESTRABADOR AUTOMÁTICO DE EN VIVO (SIN CONGELAMIENTO EN 0:00)
+    // REPRODUCTOR BLINDADO CONTRA BLOQUEOS DE AUTOPLAY Y CONGELAMIENTO EN 0:00
     // ========================================================================
     function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
 
       const [status, setStatus] = useState('IDLE');
+      const [isMutedByPolicy, setIsMutedByPolicy] = useState(false);
       const [audioTracks, setAudioTracks] = useState([
         { index: 0, label: 'Pista 1 — Principal' },
         { index: 1, label: 'Pista 2 — Secundario' }
       ]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
+
       const [subtitleTracks, setSubtitleTracks] = useState([]);
       const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
@@ -1198,6 +1200,7 @@
         setSelectedAudioTrack(0);
         setSubtitleTracks([]);
         setActiveSubtitle('OFF');
+        setIsMutedByPolicy(false);
 
         if (item?.type === 'MOVIE' && item?.streamId && serverHost) {
           const vodInfoUrl = `${serverHost}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_info&vod_id=${item.streamId}`;
@@ -1217,6 +1220,32 @@
         }
       }, [item]);
 
+      const executePlaySafe = async (videoElement, playerInstance) => {
+        try {
+          videoElement.muted = false;
+          videoElement.volume = 1.0;
+          if (playerInstance) {
+            await playerInstance.play();
+          } else {
+            await videoElement.play();
+          }
+          setIsMutedByPolicy(false);
+          setStatus('PLAYING');
+        } catch (err) {
+          // Si Chrome bloquea play() con audio, reproducimos silenciado para que el video NUNCA se congele en 0:00
+          console.warn('[AUTOPLAY INTERVENIDO] Continuando en mudo:', err.name);
+          videoElement.muted = true;
+          setIsMutedByPolicy(true);
+          try {
+            if (playerInstance) await playerInstance.play();
+            else await videoElement.play();
+            setStatus('PLAYING');
+          } catch (_) {
+            setStatus('PLAYING');
+          }
+        }
+      };
+
       const startPlayback = () => {
         if (!item?.streamUrl || !videoRef.current) return;
         setStatus('LOADING');
@@ -1227,15 +1256,11 @@
           playerRef.current = null;
         }
 
-        video.muted = false;
-        video.volume = 1.0;
-
         const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
 
         if (item.type === 'LIVE') {
           if (window.mpegts && window.mpegts.isSupported()) {
             try {
-              // BÚFER DE 1.5 MB Y ESTABILIDAD PARA CANALES FHD (8-10 MBPS)
               const player = window.mpegts.createPlayer({
                 type: 'm2ts',
                 isLive: true,
@@ -1244,27 +1269,18 @@
               }, {
                 enableWorker: true,
                 lazyLoad: false,
-                enableStashBuffer: true,
-                stashInitialSize: 1536 * 1024, // 1.5 MB de colchón inicial para evitar microcortes
-                liveBufferLatencyChasing: false, // Desactivado para que no salte cuadros bruscamente
+                enableStashBuffer: false,
+                liveBufferLatencyChasing: false,
                 autoCleanupSourceBuffer: true,
-                autoCleanupMaxBackwardDuration: 30,
-                autoCleanupMinBackwardDuration: 15,
-                maxBufferLength: 15
+                autoCleanupMaxBackwardDuration: 25,
+                autoCleanupMinBackwardDuration: 10
               });
 
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
 
-              const playPromise = player.play();
-              if (playPromise && playPromise.catch) {
-                playPromise.catch(() => {
-                  // Si las políticas del navegador restringen el arranque con sonido
-                  video.muted = true;
-                  player.play().catch(() => {});
-                });
-              }
+              executePlaySafe(video, player);
 
               player.on(window.mpegts.Events.ERROR, () => {
                 if (video.currentTime > 0) return;
@@ -1276,14 +1292,12 @@
           } else {
             video.src = directProxyUrl;
             video.load();
-            video.play().catch(() => {});
-            setStatus('PLAYING');
+            executePlaySafe(video, null);
           }
         } else {
           video.src = directProxyUrl;
           video.load();
-          video.play().then(() => {
-            setStatus('PLAYING');
+          executePlaySafe(video, null).then(() => {
             if (video.audioTracks && video.audioTracks.length > 1) {
               const detected = [];
               for (let i = 0; i < video.audioTracks.length; i++) {
@@ -1295,46 +1309,42 @@
               }
               setAudioTracks(detected);
             }
-          }).catch(() => {
-            setStatus('ERROR');
-          });
+          }).catch(() => setStatus('ERROR'));
         }
       };
 
-      // SINCRONIZADOR AUTOMÁTICO DE LÍNEA DE TIEMPO (DESCONGELADOR DE 0:00)
+      // VIGILANTE DE REPRODUCCIÓN: Destraba cualquier pausa accidental provocada por cambio de stream
       useEffect(() => {
         const video = videoRef.current;
         if (!video) return;
 
-        const checkAndUnfreeze = () => {
-          if (video.buffered && video.buffered.length > 0) {
-            const bStart = video.buffered.start(0);
-            // Si el stream empezó en un segundo adelantado (ej. 1.5s) y el video está en 0:00
-            if (video.currentTime < bStart) {
-              video.currentTime = bStart + 0.05;
-            }
-          }
-          if (video.paused && video.readyState >= 2) {
-            video.play().catch(() => {});
-          }
-          if (video.currentTime > 0) {
+        const handleTimeUpdate = () => {
+          if (video.currentTime > 0 && status === 'LOADING') {
             setStatus('PLAYING');
           }
         };
 
-        video.addEventListener('loadeddata', checkAndUnfreeze);
-        video.addEventListener('canplay', checkAndUnfreeze);
-        video.addEventListener('timeupdate', checkAndUnfreeze);
-        video.addEventListener('waiting', checkAndUnfreeze);
+        const handleCanPlay = () => {
+          if (video.paused) {
+            video.play().catch(() => {});
+          }
+          if (video.buffered && video.buffered.length > 0) {
+            const bStart = video.buffered.start(0);
+            if (video.currentTime < bStart) {
+              video.currentTime = bStart + 0.05;
+            }
+          }
+        };
+
+        video.addEventListener('timeupdate', handleTimeUpdate);
         video.addEventListener('playing', () => setStatus('PLAYING'));
+        video.addEventListener('canplay', handleCanPlay);
 
         return () => {
-          video.removeEventListener('loadeddata', checkAndUnfreeze);
-          video.removeEventListener('canplay', checkAndUnfreeze);
-          video.removeEventListener('timeupdate', checkAndUnfreeze);
-          video.removeEventListener('waiting', checkAndUnfreeze);
+          video.removeEventListener('timeupdate', handleTimeUpdate);
+          video.removeEventListener('canplay', handleCanPlay);
         };
-      }, []);
+      }, [status]);
 
       useEffect(() => {
         startPlayback();
@@ -1345,6 +1355,15 @@
           }
         };
       }, [item, selectedAudioTrack]);
+
+      const handleUnmuteClick = () => {
+        if (videoRef.current) {
+          videoRef.current.muted = false;
+          videoRef.current.volume = 1.0;
+          videoRef.current.play().catch(() => {});
+          setIsMutedByPolicy(false);
+        }
+      };
 
       const handleAudioChange = (newIndex) => {
         const idx = Number(newIndex);
@@ -1397,12 +1416,22 @@
                     Canal: <strong className="text-violet-300">{item?.title}</strong>
                   </span>
                 </div>
-                <button
-                  onClick={() => startPlayback()}
-                  className="px-3 py-1.5 rounded-xl font-bold bg-violet-600 hover:bg-violet-500 text-white transition shadow flex items-center gap-1.5"
-                >
-                  🔄 Recargar Canal
-                </button>
+                <div className="flex items-center gap-2">
+                  {isMutedByPolicy && (
+                    <button
+                      onClick={handleUnmuteClick}
+                      className="px-3 py-1.5 rounded-xl font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition shadow animate-pulse flex items-center gap-1.5"
+                    >
+                      🔊 Activar Audio
+                    </button>
+                  )}
+                  <button
+                    onClick={() => startPlayback()}
+                    className="px-3 py-1.5 rounded-xl font-bold bg-violet-600 hover:bg-violet-500 text-white transition shadow flex items-center gap-1.5"
+                  >
+                    🔄 Recargar Canal
+                  </button>
+                </div>
               </div>
             ) : isVod ? (
               <div className="flex flex-wrap items-center gap-3 w-full">
@@ -1444,11 +1473,29 @@
           </div>
 
           <div className="relative aspect-video bg-black flex items-center justify-center">
-            <video ref={videoRef} controls playsInline autoPlay crossOrigin="anonymous" className="w-full h-full object-contain">
+            <video
+              ref={videoRef}
+              controls
+              playsInline
+              autoPlay
+              crossOrigin="anonymous"
+              className="w-full h-full object-contain cursor-pointer"
+              onClick={handleUnmuteClick}
+            >
               {subtitleTracks.map(sub => (
                 <track key={sub.id} kind="subtitles" label={sub.label} src={sub.url} default={activeSubtitle === sub.label} />
               ))}
             </video>
+
+            {/* AVISO DISCRETO SI EL NAVEGADOR FORZÓ SILENCIO AL INICIAR */}
+            {isMutedByPolicy && (
+              <div
+                onClick={handleUnmuteClick}
+                className="absolute bottom-16 right-4 z-20 px-3 py-1.5 rounded-xl bg-amber-500/90 text-slate-950 font-black text-xs shadow-2xl cursor-pointer hover:bg-amber-400 transition flex items-center gap-1.5 animate-bounce"
+              >
+                <span>🔊 Toca aquí para activar sonido</span>
+              </div>
+            )}
 
             {status === 'LOADING' && (
               <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center p-4 text-center pointer-events-none">

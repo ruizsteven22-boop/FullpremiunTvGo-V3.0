@@ -141,6 +141,7 @@
       const [showLicenseModal, setShowLicenseModal] = useState(false);
       const [showAppsModal, setShowAppsModal] = useState(false);
       const [paymentSuccessModal, setPaymentSuccessModal] = useState(false);
+      const [paymentFailureModal, setPaymentFailureModal] = useState(false);
       const [deferredPwaPrompt, setDeferredPwaPrompt] = useState(null);
 
       // FAVORITOS PERSISTENTES
@@ -179,8 +180,6 @@
       const [loading, setLoading] = useState(false);
       const [loadingStatus, setLoadingStatus] = useState('');
 
-      const listContainerRef = useRef(null);
-
       const syncDeviceWithServer = async (clientTypeOverride, providerLabelOverride, userOverride) => {
         try {
           const res = await fetch('/api/device/init', {
@@ -200,13 +199,20 @@
         } catch (_) {}
       };
 
-      // DETECTAR RETORNO DE MERCADO PAGO (?status=success)
+      // DETECCIÓN Y LIMPIEZA DE RETORNO DE MERCADO PAGO (?status=success/failure/pending)
       useEffect(() => {
         const urlParams = new URLSearchParams(window.location.search);
         const status = urlParams.get('status');
 
         if (status === 'success') {
           setPaymentSuccessModal(true);
+        } else if (status === 'failure') {
+          setPaymentFailureModal(true);
+        } else if (status === 'pending') {
+          alert('Tu pago está en proceso de acreditación. En cuanto se confirme, tu suscripción se activará automáticamente.');
+        }
+
+        if (status) {
           window.history.replaceState({}, document.title, window.location.pathname);
         }
 
@@ -218,7 +224,6 @@
         });
       }, []);
 
-      // GUARDAR FAVORITOS
       const toggleFavorite = (itemId, e) => {
         if (e) e.stopPropagation();
         setFavorites(prev => {
@@ -445,10 +450,10 @@
 
       const visibleItems = useMemo(() => filteredItems.slice(0, visibleLimit), [filteredItems, visibleLimit]);
 
-      // CONTROL REMOTO NATIVO (D-PAD: ARRIBA, ABAJO, ENTER, ATRÁS)
+      // NAVEGACIÓN D-PAD CONTROL REMOTO
       useEffect(() => {
         const handleKeyDown = (e) => {
-          if (showLicenseModal || showAppsModal || paymentSuccessModal) return;
+          if (showLicenseModal || showAppsModal || paymentSuccessModal || paymentFailureModal) return;
           if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
 
           if (e.key === 'ArrowDown') {
@@ -477,7 +482,7 @@
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-      }, [visibleItems, focusedIndex, showLicenseModal, showAppsModal, paymentSuccessModal]);
+      }, [visibleItems, focusedIndex, showLicenseModal, showAppsModal, paymentSuccessModal, paymentFailureModal]);
 
       const handleTabChange = (newTab) => {
         setActiveTab(newTab);
@@ -513,7 +518,7 @@
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.4 Smart TV</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.5 Pro</span>
                 </div>
                 <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
               </div>
@@ -562,6 +567,29 @@
 
           {/* CONTENEDOR CENTRAL */}
           <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 lg:p-6">
+            {/* BANNER PREVENTIVO DE VENCIMIENTO (DÍAS RESTANTES <= 3) */}
+            {deviceAccess.allowed && deviceAccess.status === 'TRIAL' && deviceAccess.daysLeft <= 3 && (
+              <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-violet-600/20 to-amber-500/20 border border-amber-500/40 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xl">⏳</span>
+                  <div>
+                    <div className="text-xs font-extrabold text-amber-300">
+                      Tu periodo de prueba finaliza en {deviceAccess.daysLeft} {deviceAccess.daysLeft === 1 ? 'día' : 'días'}.
+                    </div>
+                    <p className="text-[11px] text-slate-300">
+                      Asegura tu suscripción anual continua por solo <strong>${applicableClpPrice.toLocaleString('es-CL')} CLP</strong> y evita cortes en tu servicio.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowLicenseModal(true)}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow-md transition transform active:scale-95"
+                >
+                  💳 Activar Año Completo
+                </button>
+              </div>
+            )}
+
             {!deviceAccess.allowed ? (
               <div className="max-w-xl mx-auto mt-10 bg-[#0B0F19] border-2 border-rose-500/50 rounded-3xl p-8 shadow-2xl text-center space-y-5">
                 <div className="w-16 h-16 mx-auto rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-3xl">🔒</div>
@@ -692,7 +720,6 @@
             ) : (
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                 <div className="xl:col-span-5 bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-col h-[740px]">
-                  {/* SELECTOR DE GRUPOS CON CATEGORÍA MIS FAVORITOS */}
                   <div className="mb-2.5">
                     <select
                       value={selectedCategory}
@@ -728,8 +755,7 @@
                     </div>
                   )}
 
-                  {/* VISTA EN LISTA (TV EN VIVO) O POSTERS (VOD) CON CONTROL REMOTO */}
-                  <div key={activeTab + '-' + selectedCategory} ref={listContainerRef} className="flex-1 overflow-y-auto pr-1">
+                  <div key={activeTab + '-' + selectedCategory} className="flex-1 overflow-y-auto pr-1">
                     {visibleItems.length === 0 ? (
                       <div className="p-8 text-center text-slate-500 text-xs">
                         {selectedCategory === 'FAVORITES' ? 'No tienes favoritos guardados aún. Toca la estrella ⭐ en cualquier canal para agregarlo.' : 'No se encontraron resultados.'}
@@ -848,6 +874,36 @@
                 >
                   Entrar a la Plataforma
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* AVISO DE PAGO NO COMPLETADO (?status=failure) */}
+          {paymentFailureModal && (
+            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-[#0B0F19] border border-amber-500/50 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
+                <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-3xl mx-auto">⚠️</div>
+                <h3 className="text-xl font-extrabold text-white">Pago no completado</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  El proceso de pago en Webpay o Mercado Pago fue cancelado o no se acreditó. Si necesitas ayuda o prefieres pagar mediante transferencia, estamos a tu disposición por WhatsApp.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setPaymentFailureModal(false)}
+                    className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition"
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPaymentFailureModal(false);
+                      setShowLicenseModal(true);
+                    }}
+                    className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs transition"
+                  >
+                    Reintentar Pago
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -1085,7 +1141,6 @@
               <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold hover:bg-slate-700">✕</button>
             </div>
 
-            {/* CAJA DESTACADA DE DOWNLOADER PARA SMART TV Y TV BOX */}
             <div className="p-4 rounded-2xl bg-gradient-to-r from-orange-600/20 via-amber-600/20 to-violet-600/20 border border-orange-500/40 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="font-extrabold text-orange-300 text-sm flex items-center gap-1.5">

@@ -512,7 +512,7 @@
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.6 Ultra</span>
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v5.7 RealTime</span>
                 </div>
                 <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
               </div>
@@ -1179,11 +1179,12 @@
     }
 
     // ========================================================================
-    // REPRODUCTOR LIMPIO: AUDIO DIRECTO AL 100% Y SIN CARGAS PEGADAS
+    // REPRODUCTOR CON DESTRABADOR AUTOMÁTICO DE EN VIVO (SIN CONGELAMIENTO EN 0:00)
     // ========================================================================
     function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
+      const unfreezeIntervalRef = useRef(null);
 
       const [status, setStatus] = useState('IDLE');
       const [audioTracks, setAudioTracks] = useState([
@@ -1223,12 +1224,16 @@
         setStatus('LOADING');
         const video = videoRef.current;
 
+        if (unfreezeIntervalRef.current) {
+          clearInterval(unfreezeIntervalRef.current);
+          unfreezeIntervalRef.current = null;
+        }
+
         if (playerRef.current) {
           try { playerRef.current.destroy(); } catch (_) {}
           playerRef.current = null;
         }
 
-        // Audio activo y al máximo
         video.muted = false;
         video.volume = 1.0;
 
@@ -1245,32 +1250,45 @@
               }, {
                 enableWorker: true,
                 lazyLoad: false,
-                enableStashBuffer: true,
-                stashInitialSize: 512 * 1024,
-                liveBufferLatencyChasing: false,
+                enableStashBuffer: false, // Flujo directo sin retención que ahogue el bitrate FHD
+                liveBufferLatencyChasing: true, // Persigue la emisión en directo
+                liveBufferLatencyMaxLatency: 2.0,
+                liveBufferLatencyMinRemain: 0.3,
                 autoCleanupSourceBuffer: true,
-                autoCleanupMaxBackwardDuration: 30,
-                autoCleanupMinBackwardDuration: 15,
-                maxBufferLength: 8,
-                seekType: 'range'
+                autoCleanupMaxBackwardDuration: 20,
+                autoCleanupMinBackwardDuration: 10,
+                fixAudioTimestampGap: true
               });
 
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
 
-              // Reproducir directamente; en cuanto arranca se quita la carga
-              player.play().then(() => {
-                setStatus('PLAYING');
-              }).catch(() => {
-                // Si la política del navegador exige clic, no forzamos error, dejamos que empiece
-                setStatus('PLAYING');
-              });
+              player.play().catch(() => {});
 
-              // Descartar errores falsos si ya hay fotogramas corriendo
+              // DESTRABADOR DE 0:00: Si el reproductor tiene datos en el búfer pero se quedó pegado en 0:00,
+              // forzamos un salto inmediato al borde del directo para que los fotogramas corran
+              unfreezeIntervalRef.current = setInterval(() => {
+                if (!videoRef.current) return;
+                const v = videoRef.current;
+                if (v.buffered && v.buffered.length > 0) {
+                  const end = v.buffered.end(v.buffered.length - 1);
+                  const start = v.buffered.start(0);
+
+                  // Si está detenido en 0:00 o fuera del búfer de transmisión
+                  if (v.currentTime < start || (v.currentTime === 0 && end > 0.3)) {
+                    v.currentTime = Math.max(start, end - 0.3);
+                  }
+                  if (v.currentTime > 0) {
+                    setStatus('PLAYING');
+                    clearInterval(unfreezeIntervalRef.current);
+                    unfreezeIntervalRef.current = null;
+                  }
+                }
+              }, 400);
+
               player.on(window.mpegts.Events.ERROR, () => {
                 if (video.currentTime > 0) return;
-                setStatus('ERROR');
               });
             } catch (_) {
               setStatus('ERROR');
@@ -1303,7 +1321,6 @@
         }
       };
 
-      // Si el video emite fotogramas o timeupdate, asegurar que la pantalla de carga se oculte
       useEffect(() => {
         const video = videoRef.current;
         if (!video) return;
@@ -1327,6 +1344,10 @@
       useEffect(() => {
         startPlayback();
         return () => {
+          if (unfreezeIntervalRef.current) {
+            clearInterval(unfreezeIntervalRef.current);
+            unfreezeIntervalRef.current = null;
+          }
           if (playerRef.current) {
             try { playerRef.current.destroy(); } catch (_) {}
             playerRef.current = null;
@@ -1439,7 +1460,7 @@
             </video>
 
             {status === 'LOADING' && (
-              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+              <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
                 <span className="text-xs text-violet-300 font-semibold">Cargando transmisión...</span>
               </div>

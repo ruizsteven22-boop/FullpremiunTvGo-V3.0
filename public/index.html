@@ -144,7 +144,6 @@
       const [paymentFailureModal, setPaymentFailureModal] = useState(false);
       const [deferredPwaPrompt, setDeferredPwaPrompt] = useState(null);
 
-      // FAVORITOS PERSISTENTES
       const [favorites, setFavorites] = useState(() => {
         try {
           return JSON.parse(localStorage.getItem('tvgo_favorites') || '[]');
@@ -199,7 +198,6 @@
         } catch (_) {}
       };
 
-      // DETECCIÓN Y LIMPIEZA DE RETORNO DE MERCADO PAGO (?status=success/failure/pending)
       useEffect(() => {
         const urlParams = new URLSearchParams(window.location.search);
         const status = urlParams.get('status');
@@ -209,7 +207,7 @@
         } else if (status === 'failure') {
           setPaymentFailureModal(true);
         } else if (status === 'pending') {
-          alert('Tu pago está en proceso de acreditación. En cuanto se confirme, tu suscripción se activará automáticamente.');
+          alert('Tu pago está en proceso de confirmación. Tu suscripción se activará automáticamente.');
         }
 
         if (status) {
@@ -450,7 +448,6 @@
 
       const visibleItems = useMemo(() => filteredItems.slice(0, visibleLimit), [filteredItems, visibleLimit]);
 
-      // NAVEGACIÓN D-PAD CONTROL REMOTO
       useEffect(() => {
         const handleKeyDown = (e) => {
           if (showLicenseModal || showAppsModal || paymentSuccessModal || paymentFailureModal) return;
@@ -511,7 +508,6 @@
 
       return (
         <div className="min-h-screen flex flex-col">
-          {/* BARRA SUPERIOR */}
           <header className="bg-[#0B0F19] border-b border-slate-800 px-4 lg:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center font-extrabold text-white text-lg shadow-lg">TV</div>
@@ -565,9 +561,7 @@
             </div>
           </header>
 
-          {/* CONTENEDOR CENTRAL */}
           <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 lg:p-6">
-            {/* BANNER PREVENTIVO DE VENCIMIENTO (DÍAS RESTANTES <= 3) */}
             {deviceAccess.allowed && deviceAccess.status === 'TRIAL' && deviceAccess.daysLeft <= 3 && (
               <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-violet-600/20 to-amber-500/20 border border-amber-500/40 flex flex-wrap items-center justify-between gap-3 shadow-lg">
                 <div className="flex items-center gap-2.5">
@@ -856,7 +850,6 @@
             )}
           </main>
 
-          {/* CONFIRMACIÓN DE PAGO EXITOSO (?status=success) */}
           {paymentSuccessModal && (
             <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-[#0B0F19] border border-emerald-500/60 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
@@ -878,7 +871,6 @@
             </div>
           )}
 
-          {/* AVISO DE PAGO NO COMPLETADO (?status=failure) */}
           {paymentFailureModal && (
             <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-[#0B0F19] border border-amber-500/50 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
@@ -908,7 +900,6 @@
             </div>
           )}
 
-          {/* MODAL DE LICENCIA Y PAGO ONLINE CON MERCADO PAGO CHILE */}
           {showLicenseModal && (
             <LicenseModal
               deviceId={deviceId}
@@ -927,7 +918,6 @@
             />
           )}
 
-          {/* MODAL DE DESCARGA CON CÓDIGO DOWNLOADER 2336838 */}
           {showAppsModal && (
             <PlatformsModal
               deferredPwaPrompt={deferredPwaPrompt}
@@ -1190,28 +1180,26 @@
       );
     }
 
+    // ========================================================================
+    // COMPONENTE REPRODUCTOR CON PROTOCOLO 'm2ts' CORREGIDO
+    // ========================================================================
     function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
       const retryCountRef = useRef(0);
 
       const [status, setStatus] = useState('IDLE');
-      const [liveEngine, setLiveEngine] = useState('MSE');
-
       const [audioTracks, setAudioTracks] = useState([
         { index: 0, label: 'Pista 1 — Principal' },
         { index: 1, label: 'Pista 2 — Secundario' }
       ]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
-      const [useServerAudioSwitch, setUseServerAudioSwitch] = useState(false);
 
       const [subtitleTracks, setSubtitleTracks] = useState([]);
       const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
       useEffect(() => {
-        setLiveEngine('MSE');
         setSelectedAudioTrack(0);
-        setUseServerAudioSwitch(false);
         setSubtitleTracks([]);
         setActiveSubtitle('OFF');
         retryCountRef.current = 0;
@@ -1247,10 +1235,11 @@
         const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
 
         if (item.type === 'LIVE') {
-          if (liveEngine === 'MSE' && window.mpegts && window.mpegts.isSupported()) {
+          if (window.mpegts && window.mpegts.isSupported()) {
             try {
+              // CORRECCIÓN CRÍTICA: tipo 'm2ts' para mpegts.js
               const player = window.mpegts.createPlayer({
-                type: 'mse',
+                type: 'm2ts',
                 isLive: true,
                 url: directProxyUrl
               }, {
@@ -1269,39 +1258,35 @@
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
-              player.play().catch(() => {});
-              setStatus('PLAYING');
 
-              player.on(window.mpegts.Events.ERROR, () => {
-                if (retryCountRef.current < 3) {
+              const playPromise = player.play();
+              if (playPromise && playPromise.catch) {
+                playPromise.catch(() => {
+                  video.muted = true;
+                  player.play().catch(() => {});
+                });
+              }
+
+              player.on(window.mpegts.Events.ERROR, (errType, errDetail) => {
+                console.warn('[MPEG-TS ERROR]', errType, errDetail);
+                if (retryCountRef.current < 2) {
                   retryCountRef.current += 1;
-                  setTimeout(startPlayback, 1500);
+                  setTimeout(startPlayback, 1200);
                 } else {
                   setStatus('ERROR');
                 }
               });
-            } catch (_) {
+            } catch (err) {
+              console.error('Error inicializando mpegts:', err);
               setStatus('ERROR');
             }
           } else {
-            const transcodeLiveUrl = `${window.location.origin}/transcode?url=${encodeURIComponent(item.streamUrl)}&audio=0&reencode=1`;
-            video.src = transcodeLiveUrl;
+            video.src = directProxyUrl;
             video.load();
-            video.play().then(() => setStatus('PLAYING')).catch(() => {
-              if (retryCountRef.current < 3) {
-                retryCountRef.current += 1;
-                setTimeout(startPlayback, 1500);
-              } else {
-                setStatus('ERROR');
-              }
-            });
+            video.play().catch(() => {});
           }
         } else {
-          const vodUrl = useServerAudioSwitch
-            ? `${window.location.origin}/transcode?url=${encodeURIComponent(item.streamUrl)}&audio=${selectedAudioTrack}`
-            : directProxyUrl;
-
-          video.src = vodUrl;
+          video.src = directProxyUrl;
           video.load();
           video.play().then(() => {
             setStatus('PLAYING');
@@ -1316,7 +1301,10 @@
               }
               setAudioTracks(detected);
             }
-          }).catch(() => setStatus('ERROR'));
+          }).catch(() => {
+            video.muted = true;
+            video.play().catch(() => setStatus('ERROR'));
+          });
         }
 
         video.onplaying = () => {
@@ -1333,19 +1321,16 @@
             playerRef.current = null;
           }
         };
-      }, [item, liveEngine, selectedAudioTrack, useServerAudioSwitch]);
+      }, [item, selectedAudioTrack]);
 
       const handleAudioChange = (newIndex) => {
         const idx = Number(newIndex);
         setSelectedAudioTrack(idx);
         const video = videoRef.current;
-
-        if (video?.audioTracks && video.audioTracks.length > 1 && !useServerAudioSwitch) {
+        if (video?.audioTracks && video.audioTracks.length > 1) {
           for (let i = 0; i < video.audioTracks.length; i++) {
             video.audioTracks[i].enabled = (i === idx);
           }
-        } else {
-          setUseServerAudioSwitch(true);
         }
       };
 
@@ -1386,14 +1371,14 @@
                 <div className="flex items-center gap-2">
                   <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">EN VIVO</span>
                   <span className="text-slate-300 font-medium">
-                    Motor: <strong className="text-violet-300">{liveEngine === 'MSE' ? 'MPEG-TS Estable' : 'FFmpeg HD/FHD'}</strong>
+                    Canal: <strong className="text-violet-300">{item?.title}</strong>
                   </span>
                 </div>
                 <button
-                  onClick={() => setLiveEngine(e => e === 'MSE' ? 'FFMPEG_HD' : 'MSE')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition shadow ${liveEngine === 'FFMPEG_HD' ? 'bg-amber-500 text-slate-950' : 'bg-violet-600 hover:bg-violet-500 text-white'}`}
+                  onClick={() => { retryCountRef.current = 0; startPlayback(); }}
+                  className="px-3 py-1.5 rounded-xl font-bold bg-violet-600 hover:bg-violet-500 text-white transition shadow flex items-center gap-1.5"
                 >
-                  {liveEngine === 'MSE' ? '🔧 Reparar Canal HD/FHD' : '⚡ Modo Rápido'}
+                  🔄 Recargar Canal
                 </button>
               </div>
             ) : isVod ? (
@@ -1451,16 +1436,13 @@
 
             {status === 'ERROR' && (
               <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3">
-                <p className="text-amber-400 font-bold text-sm">Problema con la señal o conexión</p>
-                {item?.type === 'LIVE' ? (
-                  <button onClick={() => setLiveEngine('FFMPEG_HD')} className="px-4 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold">
-                    🔧 Decodificar con FFmpeg HD/FHD
-                  </button>
-                ) : (
-                  <button onClick={() => setUseServerAudioSwitch(true)} className="px-4 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold">
-                    🔧 Reproducir con Multi-Audio
-                  </button>
-                )}
+                <p className="text-amber-400 font-bold text-sm">Problema con la señal del canal</p>
+                <button
+                  onClick={() => { retryCountRef.current = 0; startPlayback(); }}
+                  className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg"
+                >
+                  🔄 Reintentar Reproducción
+                </button>
               </div>
             )}
           </div>

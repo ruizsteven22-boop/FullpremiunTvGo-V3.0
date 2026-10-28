@@ -66,7 +66,6 @@ async function sendActivationEmail(toEmail, deviceId, paymentId, tier) {
 
   try {
     await mailTransporter.sendMail(mailOptions);
-    console.log(`[EMAIL ENVIADO] Comprobante despachado a ${toEmail} para el equipo ${deviceId}`);
   } catch (err) {
     console.error('Error enviando email:', err.message);
   }
@@ -79,6 +78,11 @@ const defaultDb = {
     trialDays: 12,
     whatsappNumber: '+56979429123',
     officialEmail: 'activaciones@app.fullpremiumtvcl.com'
+  },
+  broadcastMessage: {
+    text: '',
+    active: false,
+    updatedAt: Date.now()
   },
   devices: {},
   licenses: {}
@@ -94,11 +98,11 @@ function loadDb() {
     const parsed = JSON.parse(content);
     return {
       settings: { ...defaultDb.settings, ...(parsed.settings || {}) },
+      broadcastMessage: parsed.broadcastMessage || defaultDb.broadcastMessage,
       devices: parsed.devices || {},
       licenses: parsed.licenses || {}
     };
   } catch (err) {
-    console.error('Error al leer db.json, usando memoria:', err);
     return JSON.parse(JSON.stringify(defaultDb));
   }
 }
@@ -202,7 +206,7 @@ function callMercadoPago(apiPath, method = 'GET', data = null) {
 }
 
 // ==========================================
-// SERVIDOR HTTP PRINCIPAL
+// SERVIDOR HTTP
 // ==========================================
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
@@ -218,7 +222,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. INICIALIZACIÓN DE DISPOSITIVO
+  // 1. INICIALIZACIÓN DE DISPOSITIVO + MENSAJES DE ADMIN
   if (pathname === '/api/device/init' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -242,6 +246,7 @@ const server = http.createServer(async (req, res) => {
           username: payload.username || null,
           licenseCode: null,
           licenseEndsAt: null,
+          customMessage: null,
           blockedManually: false
         };
         db.devices[deviceId] = device;
@@ -259,18 +264,10 @@ const server = http.createServer(async (req, res) => {
         deviceId,
         access,
         pricing: db.settings,
+        adminNotice: device.customMessage ? { text: device.customMessage, active: true, target: 'PRIVATE' } : db.broadcastMessage,
         exchange: {
           base: 'CLP',
-          rates: {
-            CLP: 1,
-            PEN: 0.00395,
-            USD: 0.00105,
-            EUR: 0.00097,
-            ARS: 1.05,
-            MXN: 0.021,
-            COP: 4.45,
-            BRL: 0.0059
-          }
+          rates: { CLP: 1, PEN: 0.00395, USD: 0.00105, EUR: 0.00097, ARS: 1.05, MXN: 0.021, COP: 4.45, BRL: 0.0059 }
         }
       });
     } catch (err) {
@@ -278,16 +275,14 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 2. CREACIÓN DE PREFERENCIA MERCADO PAGO
+  // 2. CREACIÓN DE PREFERENCIA DE PAGO MERCADO PAGO
   if (pathname === '/api/payment/create-preference' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
       const deviceId = (payload.deviceId || '').trim();
       const tier = payload.tier === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL';
 
-      if (!deviceId) {
-        return sendJson(res, 400, { error: 'deviceId es requerido' });
-      }
+      if (!deviceId) return sendJson(res, 400, { error: 'deviceId es requerido' });
 
       const db = loadDb();
       const unitPrice = tier === 'OFFICIAL' ? db.settings.priceOfficialCLP : db.settings.priceExternalCLP;
@@ -299,23 +294,16 @@ const server = http.createServer(async (req, res) => {
       const baseUrl = `https://${host}`;
 
       const preferenceData = {
-        items: [
-          {
-            id: `LIC-365-${tier}`,
-            title: `${title} [ID: ${deviceId}]`,
-            description: `Activación anual de Full Premium TvGo para el dispositivo ${deviceId}`,
-            quantity: 1,
-            currency_id: 'CLP',
-            unit_price: Number(unitPrice)
-          }
-        ],
-        payer: {
-          email: payload.email || 'cliente@app.fullpremiumtvcl.com'
-        },
-        metadata: {
-          device_id: deviceId,
-          tier: tier
-        },
+        items: [{
+          id: `LIC-365-${tier}`,
+          title: `${title} [ID: ${deviceId}]`,
+          description: `Activación anual para ${deviceId}`,
+          quantity: 1,
+          currency_id: 'CLP',
+          unit_price: Number(unitPrice)
+        }],
+        payer: { email: payload.email || 'cliente@app.fullpremiumtvcl.com' },
+        metadata: { device_id: deviceId, tier },
         back_urls: {
           success: `${baseUrl}/?status=success&device=${deviceId}`,
           failure: `${baseUrl}/?status=failure&device=${deviceId}`,
@@ -334,10 +322,7 @@ const server = http.createServer(async (req, res) => {
           publicKey: MP_PUBLIC_KEY
         });
       } else {
-        return sendJson(res, 500, {
-          error: 'Error al comunicarse con Mercado Pago',
-          details: mpResponse.body
-        });
+        return sendJson(res, 500, { error: 'Error al comunicarse con Mercado Pago', details: mpResponse.body });
       }
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
@@ -348,7 +333,6 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/webhook/mercadopago') {
     try {
       let paymentId = parsedUrl.query['data.id'] || parsedUrl.query.id;
-
       if (!paymentId && req.method === 'POST') {
         const payload = await parseJsonBody(req).catch(() => ({}));
         paymentId = payload.data?.id || payload.id;
@@ -385,8 +369,6 @@ const server = http.createServer(async (req, res) => {
             }
 
             saveDb(db);
-            console.log(`[PAGO APROBADO] Dispositivo ${targetDeviceId} activado por 365 días.`);
-
             sendActivationEmail(payerEmail, targetDeviceId, paymentId, tier);
           }
         }
@@ -396,7 +378,6 @@ const server = http.createServer(async (req, res) => {
       res.end('OK');
       return;
     } catch (err) {
-      console.error('Error en webhook de Mercado Pago:', err);
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end('ERROR_HANDLED');
       return;
@@ -413,9 +394,7 @@ const server = http.createServer(async (req, res) => {
       const db = loadDb();
       const lic = db.licenses[code];
 
-      if (!lic) {
-        return sendJson(res, 400, { error: 'Código de licencia no válido o inexistente' });
-      }
+      if (!lic) return sendJson(res, 400, { error: 'Código de licencia no válido o inexistente' });
       if (lic.usedBy && lic.usedBy !== deviceId) {
         return sendJson(res, 400, { error: 'Este código ya fue utilizado en otro dispositivo' });
       }
@@ -445,24 +424,20 @@ const server = http.createServer(async (req, res) => {
       lic.usedAt = now;
 
       saveDb(db);
-      const access = computeAccess(device, db.settings);
-
       return sendJson(res, 200, {
         ok: true,
         message: `¡Licencia activada con éxito por ${lic.days || 365} días!`,
-        access
+        access: computeAccess(device, db.settings)
       });
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
     }
   }
 
-  // 5. PANEL DE CONTROL PRIVADO
+  // 5. PANEL DE CONTROL PRIVADO & MENSAJERÍA
   if (pathname === '/api/admin/overview' && req.method === 'GET') {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_PASSWORD) {
-      return sendJson(res, 401, { error: 'Acceso no autorizado' });
-    }
+    if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
 
     const db = loadDb();
     const deviceList = Object.values(db.devices).map(dev => ({
@@ -472,16 +447,42 @@ const server = http.createServer(async (req, res) => {
 
     return sendJson(res, 200, {
       settings: db.settings,
+      broadcastMessage: db.broadcastMessage,
       devices: deviceList,
       licenses: Object.values(db.licenses)
     });
   }
 
+  // ENDPOINT: ENVIAR MENSAJE A USUARIOS
+  if (pathname === '/api/admin/send-message' && req.method === 'POST') {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
+
+    try {
+      const payload = await parseJsonBody(req);
+      const { target, text, active } = payload;
+      const db = loadDb();
+
+      if (target === 'ALL') {
+        db.broadcastMessage = {
+          text: (text || '').trim(),
+          active: Boolean(active),
+          updatedAt: Date.now()
+        };
+      } else if (db.devices[target]) {
+        db.devices[target].customMessage = active ? (text || '').trim() : null;
+      }
+
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, broadcastMessage: db.broadcastMessage });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
   if (pathname === '/api/admin/generate-license' && req.method === 'POST') {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_PASSWORD) {
-      return sendJson(res, 401, { error: 'Acceso no autorizado' });
-    }
+    if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
 
     try {
       const payload = await parseJsonBody(req);
@@ -506,7 +507,6 @@ const server = http.createServer(async (req, res) => {
 
       db.licenses[code] = newLicense;
       saveDb(db);
-
       return sendJson(res, 200, { ok: true, license: newLicense });
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
@@ -515,9 +515,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === '/api/admin/device-action' && req.method === 'POST') {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_PASSWORD) {
-      return sendJson(res, 401, { error: 'Acceso no autorizado' });
-    }
+    if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
 
     try {
       const payload = await parseJsonBody(req);
@@ -525,16 +523,12 @@ const server = http.createServer(async (req, res) => {
       const db = loadDb();
       const device = db.devices[deviceId];
 
-      if (!device) {
-        return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
-      }
+      if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
 
       const now = Date.now();
-      if (action === 'BLOCK') {
-        device.blockedManually = true;
-      } else if (action === 'UNBLOCK') {
-        device.blockedManually = false;
-      } else if (action === 'RESET_TRIAL') {
+      if (action === 'BLOCK') device.blockedManually = true;
+      else if (action === 'UNBLOCK') device.blockedManually = false;
+      else if (action === 'RESET_TRIAL') {
         device.firstSeenAt = now;
         device.licenseEndsAt = null;
         device.blockedManually = false;
@@ -552,7 +546,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 6. PROXY DE STREAMING CON CERO LATENCIA Y SOPORTE FLUIDO PARA CANALES EN VIVO
+  // 6. PROXY DE STREAMING
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
     if (!targetUrl) {
@@ -580,7 +574,6 @@ const server = http.createServer(async (req, res) => {
             ...(req.headers.range ? { 'Range': req.headers.range } : {})
           }
         }, (proxyRes) => {
-          // Seguir redirecciones 301, 302, 307, 308 automáticamente
           if ([301, 302, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
             const nextUrl = url.resolve(currentUrl, proxyRes.headers.location);
             return proxyStream(nextUrl, redirectCount + 1);
@@ -595,10 +588,9 @@ const server = http.createServer(async (req, res) => {
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'Expires': '0',
-            'X-Accel-Buffering': 'no' // Desactiva almacenamiento en búfer de Nginx
+            'X-Accel-Buffering': 'no'
           };
 
-          // Nunca enviar Content-Length en streams en vivo para evitar corte de descarga
           if (proxyRes.headers['content-length'] && !isLiveStream) {
             responseHeaders['Content-Length'] = proxyRes.headers['content-length'];
           }
@@ -649,10 +641,8 @@ const server = http.createServer(async (req, res) => {
       '.apk': 'application/vnd.android.package-archive'
     };
 
-    const contentType = mimeTypes[ext] || 'application/octet-stream';
-
     res.writeHead(200, {
-      'Content-Type': contentType,
+      'Content-Type': mimeTypes[ext] || 'application/octet-stream',
       'Access-Control-Allow-Origin': '*'
     });
 

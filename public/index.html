@@ -4,24 +4,28 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Full Premium TvGo — Plataforma OTT</title>
-  <meta name="theme-color" content="#0B0F19" />
+  <meta name="theme-color" content="#070913" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="manifest" href="/manifest.json" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
-      });
-    }
-  </script>
+  <style>
+    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: rgba(11, 15, 25, 0.6); }
+    ::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.3); border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.6); }
+  </style>
 </head>
-<body class="bg-[#05070D] text-slate-100 min-h-screen font-sans selection:bg-violet-600 selection:text-white">
+<body class="bg-[#05070E] text-slate-100 min-h-screen selection:bg-violet-600 selection:text-white antialiased overflow-x-hidden">
   <div id="root"></div>
 
   <script type="text/babel">
@@ -144,6 +148,7 @@
       const [paymentFailureModal, setPaymentFailureModal] = useState(false);
       const [deferredPwaPrompt, setDeferredPwaPrompt] = useState(null);
 
+      // FAVORITOS PERSISTENTES
       const [favorites, setFavorites] = useState(() => {
         try {
           return JSON.parse(localStorage.getItem('tvgo_favorites') || '[]');
@@ -178,6 +183,9 @@
       const [search, setSearch] = useState('');
       const [loading, setLoading] = useState(false);
       const [loadingStatus, setLoadingStatus] = useState('');
+
+      // UI/UX STATE: Control de colapso de guía de canales
+      const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
       const syncDeviceWithServer = async (clientTypeOverride, providerLabelOverride, userOverride) => {
         try {
@@ -504,134 +512,168 @@
       const isOfficialClient = loginMode === 'OFFICIAL';
       const applicableClpPrice = isOfficialClient ? pricing.priceOfficialCLP : pricing.priceExternalCLP;
 
+      // Hero item para la cartelera de películas o series
+      const heroItem = useMemo(() => {
+        if (activeTab === 'MOVIES' && moviesCatalog.length > 0) return moviesCatalog[0];
+        if (activeTab === 'SERIES' && seriesCatalog.length > 0) return seriesCatalog[0];
+        return null;
+      }, [activeTab, moviesCatalog, seriesCatalog]);
+
       return (
-        <div className="min-h-screen flex flex-col">
-          <header className="bg-[#0B0F19] border-b border-slate-800 px-4 lg:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-h-screen flex flex-col bg-[#05070E]">
+          {/* HEADER OTT FLOTANTE CON GLASSMORPHISM */}
+          <header className="sticky top-0 z-40 backdrop-blur-xl bg-[#070913]/85 border-b border-slate-800/80 px-4 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4 transition-all">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center font-extrabold text-white text-lg shadow-lg">TV</div>
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-violet-600 via-indigo-600 to-fuchsia-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-violet-500/20 ring-1 ring-white/20">
+                TV
+              </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="text-lg font-extrabold text-white">Full Premium <span className="text-violet-400">TvGo</span></h1>
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full">v6.0 Stable</span>
+                  <span className="text-lg font-black tracking-tight text-white">Full Premium <span className="bg-gradient-to-r from-violet-400 to-indigo-300 bg-clip-text text-transparent">TvGo</span></span>
+                  <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider bg-violet-500/10 text-violet-300 border border-violet-500/20 rounded-full shadow-inner">
+                    OTT Ultra
+                  </span>
                 </div>
-                <p className="text-[11px] text-slate-400">ID Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></p>
+                <div className="text-[11px] text-slate-400 flex items-center gap-1.5 font-medium">
+                  ID: <span className="font-mono text-slate-200 tracking-wider">{deviceId}</span>
+                </div>
               </div>
             </div>
 
             {auth && (
-              <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800 gap-1 text-xs">
-                <button onClick={() => handleTabChange('LIVE')} className={`px-3 py-1.5 rounded-lg font-bold transition ${activeTab === 'LIVE' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>📺 TV en Vivo ({liveCatalog.length})</button>
-                <button onClick={() => handleTabChange('MOVIES')} className={`px-3 py-1.5 rounded-lg font-bold transition ${activeTab === 'MOVIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>🎬 Películas ({moviesCatalog.length})</button>
-                <button onClick={() => handleTabChange('SERIES')} className={`px-3 py-1.5 rounded-lg font-bold transition ${activeTab === 'SERIES' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>📂 Series ({seriesCatalog.length})</button>
-              </div>
+              <nav className="flex items-center bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 shadow-xl gap-1">
+                <button
+                  onClick={() => handleTabChange('LIVE')}
+                  className={`px-4 py-2 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+                    activeTab === 'LIVE'
+                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30 ring-1 ring-violet-400/40'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                  }`}
+                >
+                  <span>📺</span> TV en Vivo <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{liveCatalog.length}</span>
+                </button>
+                <button
+                  onClick={() => handleTabChange('MOVIES')}
+                  className={`px-4 py-2 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+                    activeTab === 'MOVIES'
+                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30 ring-1 ring-violet-400/40'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                  }`}
+                >
+                  <span>🍿</span> Películas <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{moviesCatalog.length}</span>
+                </button>
+                <button
+                  onClick={() => handleTabChange('SERIES')}
+                  className={`px-4 py-2 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+                    activeTab === 'SERIES'
+                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30 ring-1 ring-violet-400/40'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                  }`}
+                >
+                  <span>📂</span> Series <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{seriesCatalog.length}</span>
+                </button>
+              </nav>
             )}
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2.5">
               <button
                 onClick={() => setShowLicenseModal(true)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-black border transition-all flex items-center gap-1.5 shadow-lg ${
                   deviceAccess.status === 'LICENSED'
-                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                    ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 shadow-emerald-500/10'
                     : deviceAccess.allowed
-                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                    ? 'bg-amber-500/15 border-amber-500/30 text-amber-300 shadow-amber-500/10'
                     : 'bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse'
                 }`}
               >
                 {deviceAccess.status === 'LICENSED'
-                  ? `✅ Licencia Activa (${deviceAccess.daysLeft} días)`
+                  ? `✅ Activo (${deviceAccess.daysLeft}d)`
                   : deviceAccess.allowed
-                  ? `⏳ Prueba: ${deviceAccess.daysLeft} de 12 días`
-                  : '🔒 Prueba vencida — Activar'}
+                  ? `⏳ Prueba (${deviceAccess.daysLeft}d)`
+                  : '🔒 Vencido — Activar'}
               </button>
 
               <button
                 onClick={() => setShowAppsModal(true)}
-                className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold"
+                className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-violet-300 hover:text-white text-xs font-bold transition shadow-lg flex items-center gap-1.5"
               >
-                📲 Instalar App / APK
+                <span>📲</span> Instalar App
               </button>
 
               {auth && (
-                <button onClick={() => setAuth(false)} className="px-3 py-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/70 text-xs font-semibold text-rose-200 border border-rose-700/40">
+                <button
+                  onClick={() => setAuth(false)}
+                  className="px-3.5 py-2 rounded-xl bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-xs font-bold text-rose-300 transition"
+                >
                   Salir
                 </button>
               )}
             </div>
           </header>
 
-          <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 lg:p-6">
+          {/* CUERPO PRINCIPAL */}
+          <main className="flex-1 w-full max-w-[1750px] mx-auto p-3 sm:p-5 lg:p-7">
+            {/* BANNER PREVENTIVO DÍAS <= 3 */}
             {deviceAccess.allowed && deviceAccess.status === 'TRIAL' && deviceAccess.daysLeft <= 3 && (
-              <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-violet-600/20 to-amber-500/20 border border-amber-500/40 flex flex-wrap items-center justify-between gap-3 shadow-lg">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-xl">⏳</span>
+              <div className="mb-5 p-4 rounded-3xl bg-gradient-to-r from-amber-500/20 via-violet-600/20 to-amber-500/20 border border-amber-500/40 flex flex-wrap items-center justify-between gap-4 shadow-2xl backdrop-blur-md">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-xl">⏳</div>
                   <div>
-                    <div className="text-xs font-extrabold text-amber-300">
-                      Tu periodo de prueba finaliza en {deviceAccess.daysLeft} {deviceAccess.daysLeft === 1 ? 'día' : 'días'}.
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      Asegura tu suscripción anual continua por solo <strong>${applicableClpPrice.toLocaleString('es-CL')} CLP</strong> y evita cortes en tu servicio.
-                    </p>
+                    <div className="text-sm font-black text-amber-300">Tu periodo de prueba finaliza en {deviceAccess.daysLeft} {deviceAccess.daysLeft === 1 ? 'día' : 'días'}.</div>
+                    <p className="text-xs text-slate-300">Renueva por solo <strong>${applicableClpPrice.toLocaleString('es-CL')} CLP al año</strong> para mantener acceso ininterrumpido.</p>
                   </div>
                 </div>
                 <button
                   onClick={() => setShowLicenseModal(true)}
-                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow-md transition transform active:scale-95"
+                  className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow-lg transition active:scale-95"
                 >
-                  💳 Activar Año Completo
+                  💳 Activar 1 Año Completo
                 </button>
               </div>
             )}
 
             {!deviceAccess.allowed ? (
-              <div className="max-w-xl mx-auto mt-10 bg-[#0B0F19] border-2 border-rose-500/50 rounded-3xl p-8 shadow-2xl text-center space-y-5">
-                <div className="w-16 h-16 mx-auto rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-3xl">🔒</div>
-                <h2 className="text-2xl font-extrabold text-white">Periodo de Prueba de 12 Días Finalizado</h2>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Tu dispositivo <strong className="text-violet-300 font-mono">{deviceId}</strong> ha completado los 12 días de prueba de <strong>Full Premium TvGo</strong>. Activa tu acceso por <strong>1 Año Completo</strong> mediante pago automático de Mercado Pago Chile o canjea tu código.
-                </p>
-                <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 text-left space-y-2 text-xs">
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-400">Clientes Oficiales Full Premium TvGo:</span>
-                    <span className="font-extrabold text-emerald-400 text-sm">${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP / Año</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-400">Otros Clientes (Listas Externas):</span>
-                    <span className="font-extrabold text-amber-300 text-sm">${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP / Año</span>
-                  </div>
+              <div className="max-w-lg mx-auto mt-12 bg-[#0B0F19] border border-rose-500/40 rounded-3xl p-8 shadow-2xl text-center space-y-6">
+                <div className="w-16 h-16 mx-auto rounded-3xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-3xl">🔒</div>
+                <div className="space-y-2">
+                  <h2 className="text-2xl font-black text-white">Periodo de Prueba Finalizado</h2>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Tu ID <strong className="text-violet-300 font-mono">{deviceId}</strong> ha completado los 12 días de prueba. Activa tu acceso por 365 días mediante Webpay / Mercado Pago Chile.
+                  </p>
                 </div>
                 <button
                   onClick={() => setShowLicenseModal(true)}
-                  className="w-full py-3.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-extrabold text-xs shadow-lg"
+                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-black text-xs shadow-xl transition"
                 >
-                  💳 Pagar Online con Mercado Pago o Activar Código
+                  💳 Pagar Online o Canjear Licencia
                 </button>
               </div>
             ) : !auth ? (
-              <div className="max-w-lg mx-auto mt-8 bg-[#0B0F19] border border-slate-800 rounded-3xl p-6 lg:p-8 shadow-2xl space-y-6">
+              <div className="max-w-md mx-auto mt-10 bg-[#0B0F19] border border-slate-800 rounded-3xl p-7 shadow-2xl space-y-6">
                 <div className="text-center space-y-1">
-                  <h2 className="text-xl font-extrabold text-white">Conectar a Full Premium TvGo</h2>
-                  <p className="text-xs text-slate-400">Elige tu modalidad de acceso o carga tu propia lista</p>
+                  <h2 className="text-xl font-black text-white">Ingresar a Full Premium TvGo</h2>
+                  <p className="text-xs text-slate-400">Selecciona tu modalidad o carga una lista externa</p>
                 </div>
 
-                <div className="grid grid-cols-3 gap-1.5 bg-slate-900 p-1.5 rounded-2xl border border-slate-800 text-[11px] font-bold">
+                <div className="grid grid-cols-3 gap-1 bg-slate-900 p-1 rounded-2xl border border-slate-800 text-[11px] font-bold">
                   <button
                     type="button"
                     onClick={() => setLoginMode('OFFICIAL')}
-                    className={`py-2 px-2 rounded-xl transition ${loginMode === 'OFFICIAL' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                    className={`py-2 rounded-xl transition ${loginMode === 'OFFICIAL' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
                   >
                     ⭐ Oficial
                   </button>
                   <button
                     type="button"
                     onClick={() => setLoginMode('CUSTOM_XTREAM')}
-                    className={`py-2 px-2 rounded-xl transition ${loginMode === 'CUSTOM_XTREAM' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                    className={`py-2 rounded-xl transition ${loginMode === 'CUSTOM_XTREAM' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
                   >
                     🌐 Xtream
                   </button>
                   <button
                     type="button"
                     onClick={() => setLoginMode('CUSTOM_M3U')}
-                    className={`py-2 px-2 rounded-xl transition ${loginMode === 'CUSTOM_M3U' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+                    className={`py-2 rounded-xl transition ${loginMode === 'CUSTOM_M3U' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
                   >
                     📂 Lista M3U
                   </button>
@@ -640,7 +682,7 @@
                 <form onSubmit={handleLogin} className="space-y-4">
                   {loginMode === 'CUSTOM_XTREAM' && (
                     <div>
-                      <label className="block text-xs text-slate-300 mb-1">URL Servidor Xtream (Host:Puerto)</label>
+                      <label className="block text-xs text-slate-300 mb-1 font-semibold">URL Servidor Xtream</label>
                       <input
                         type="url"
                         placeholder="http://ejemplo.com:8080"
@@ -655,17 +697,17 @@
                   {loginMode !== 'CUSTOM_M3U' ? (
                     <>
                       <div>
-                        <label className="block text-xs text-slate-300 mb-1">Usuario</label>
+                        <label className="block text-xs text-slate-300 mb-1 font-semibold">Usuario</label>
                         <input
                           type="text"
                           value={username}
                           onChange={e => setUsername(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white font-medium"
                           required
                         />
                       </div>
                       <div>
-                        <label className="block text-xs text-slate-300 mb-1">Contraseña</label>
+                        <label className="block text-xs text-slate-300 mb-1 font-semibold">Contraseña</label>
                         <input
                           type="password"
                           value={password}
@@ -678,221 +720,339 @@
                   ) : (
                     <>
                       <div>
-                        <label className="block text-xs text-slate-300 mb-1">URL de Lista M3U / M3U8</label>
+                        <label className="block text-xs text-slate-300 mb-1 font-semibold">URL de Lista M3U</label>
                         <input
                           type="url"
-                          placeholder="http://servidor.com/get.php?username=...&type=m3u_plus"
+                          placeholder="http://servidor.com/get.php?..."
                           value={m3uUrlInput}
                           onChange={e => setM3uUrlInput(e.target.value)}
                           className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
                         />
                       </div>
                       <div>
-                        <label className="block w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-dashed border-violet-500/50 text-center text-xs text-violet-300 font-semibold cursor-pointer hover:bg-slate-800/60">
-                          📁 Seleccionar archivo .M3U local
+                        <label className="block w-full py-3 px-3 rounded-xl bg-slate-900 border border-dashed border-violet-500/40 text-center text-xs text-violet-300 font-bold cursor-pointer hover:bg-slate-800 transition">
+                          📁 Subir archivo .M3U local
                           <input type="file" accept=".m3u,.m3u8,.txt" onChange={handleM3uFileUpload} className="hidden" />
                         </label>
-                        {m3uRawText && (
-                          <p className="text-[11px] text-emerald-400 mt-1 text-center">✔ Archivo M3U cargado</p>
-                        )}
+                        {m3uRawText && <p className="text-[11px] text-emerald-400 mt-1 text-center font-bold">✔ Archivo M3U cargado</p>}
                       </div>
                     </>
                   )}
 
-                  <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300 flex items-center justify-between">
+                  <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-[11px] flex justify-between items-center text-slate-300">
                     <span>Tarifa anual:</span>
-                    <strong className="text-emerald-400">${applicableClpPrice.toLocaleString('es-CL')} CLP / Año</strong>
+                    <strong className="text-emerald-400 font-extrabold text-sm">${applicableClpPrice.toLocaleString('es-CL')} CLP</strong>
                   </div>
 
-                  <button type="submit" disabled={loading} className="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs shadow-lg disabled:opacity-50 transition">
-                    {loading ? loadingStatus : 'Entrar a Full Premium TvGo'}
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-black text-xs shadow-xl transition disabled:opacity-50"
+                  >
+                    {loading ? loadingStatus : 'Conectar y Ver Ahora'}
                   </button>
                 </form>
               </div>
-            ) : (
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-                <div className="xl:col-span-5 bg-[#0B0F19] border border-slate-800 rounded-2xl p-4 flex flex-col h-[740px]">
-                  <div className="mb-2.5">
-                    <select
-                      value={selectedCategory}
-                      onChange={(e) => { setSelectedCategory(e.target.value); setVisibleLimit(80); setFocusedIndex(0); }}
-                      className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-violet-500/40 text-xs text-white font-semibold focus:outline-none"
+            ) : activeTab === 'LIVE' ? (
+              /* ============================================================ */
+              /* LAYOUT CINEMÁTICO DE TV EN VIVO                              */
+              /* ============================================================ */
+              <div className="space-y-4">
+                {/* BARRA DE FILTROS HORIZONTALES / CHIPS DE CATEGORÍA */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs no-scrollbar">
+                  <button
+                    onClick={() => { setSelectedCategory('FAVORITES'); setVisibleLimit(80); }}
+                    className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition flex items-center gap-1.5 shadow-sm ${
+                      selectedCategory === 'FAVORITES'
+                        ? 'bg-amber-500 text-slate-950 font-black shadow-amber-500/20'
+                        : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                  >
+                    ⭐ Favoritos ({favorites.length})
+                  </button>
+                  <button
+                    onClick={() => { setSelectedCategory('ALL'); setVisibleLimit(80); }}
+                    className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition shadow-sm ${
+                      selectedCategory === 'ALL'
+                        ? 'bg-violet-600 text-white shadow-violet-600/30 ring-1 ring-violet-400'
+                        : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                  >
+                    Todos ({currentCatalog.length})
+                  </button>
+                  {currentCategories.map(cat => (
+                    <button
+                      key={cat.category_id}
+                      onClick={() => { setSelectedCategory(String(cat.category_id)); setVisibleLimit(80); }}
+                      className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition shadow-sm ${
+                        selectedCategory === String(cat.category_id)
+                          ? 'bg-violet-600 text-white shadow-violet-600/30 ring-1 ring-violet-400'
+                          : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                      }`}
                     >
-                      <option value="FAVORITES" className="text-amber-300 font-bold">⭐ Mis Favoritos ({favorites.length})</option>
-                      <option value="ALL">📂 Todos los Grupos ({currentCatalog.length})</option>
-                      {currentCategories.map(cat => (
-                        <option key={cat.category_id} value={String(cat.category_id)}>📁 {cat.category_name}</option>
-                      ))}
-                    </select>
-                  </div>
+                      {cat.category_name}
+                    </button>
+                  ))}
+                </div>
 
-                  <div className="mb-3">
-                    <input
-                      type="text"
-                      placeholder="Buscar contenido o canal..."
-                      value={search}
-                      onChange={e => { setSearch(e.target.value); setVisibleLimit(80); setFocusedIndex(0); }}
-                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
-                    />
-                  </div>
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                  {/* GUÍA DE CANALES FLOTANTE / EXPANDIBLE */}
+                  {isSidebarOpen && (
+                    <div className="lg:col-span-4 bg-[#090C16] border border-slate-800/90 rounded-3xl p-4 flex flex-col h-[780px] shadow-2xl relative transition-all">
+                      <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
+                        <span className="text-xs font-black uppercase tracking-wider text-slate-300">
+                          Guía de Canales ({filteredItems.length})
+                        </span>
+                        <button
+                          onClick={() => setIsSidebarOpen(false)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-800 text-[11px] text-slate-400 hover:text-white font-bold"
+                          title="Contraer para ver cine a pantalla completa"
+                        >
+                          ✕ Ocultar
+                        </button>
+                      </div>
 
-                  {activeTab === 'SERIES' && (loadingSeriesInfo || seriesEpisodes.length > 0) && (
-                    <div className="mb-3 p-2.5 rounded-xl bg-violet-950/30 border border-violet-500/30 max-h-44 overflow-y-auto">
-                      <div className="text-[11px] font-bold text-violet-300 mb-1.5">{loadingSeriesInfo ? 'Cargando episodios...' : `Episodios (${seriesEpisodes.length}):`}</div>
-                      <div className="space-y-1">
-                        {seriesEpisodes.map(ep => (
-                          <button key={ep.id} onClick={() => setActiveItem(ep)} className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] truncate transition ${activeItem?.id === ep.id ? 'bg-violet-600 text-white font-bold' : 'bg-slate-900/80 text-slate-300 hover:bg-slate-800'}`}>▶️ {ep.title}</button>
-                        ))}
+                      <div className="mb-3">
+                        <input
+                          type="text"
+                          placeholder="Buscar canal por nombre..."
+                          value={search}
+                          onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }}
+                          className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-900/90 border border-slate-800 text-xs text-white focus:outline-none focus:border-violet-500"
+                        />
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto pr-1 space-y-1.5">
+                        {visibleItems.length === 0 ? (
+                          <div className="p-8 text-center text-slate-500 text-xs font-medium">
+                            {selectedCategory === 'FAVORITES' ? 'No tienes favoritos aún. Toca la estrella en un canal para guardarlo.' : 'No se encontraron canales.'}
+                          </div>
+                        ) : (
+                          visibleItems.map((item, idx) => {
+                            const isFav = favorites.includes(item.id);
+                            const isSelected = activeItem?.id === item.id;
+                            return (
+                              <div
+                                key={item.id}
+                                id={`item-${idx}`}
+                                onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
+                                className={`p-2.5 rounded-2xl cursor-pointer transition flex items-center justify-between gap-3 ${
+                                  isSelected
+                                    ? 'bg-gradient-to-r from-violet-600/30 to-indigo-600/20 border border-violet-500/60 shadow-lg shadow-violet-600/10 text-white'
+                                    : 'hover:bg-slate-800/40 text-slate-300 border border-transparent'
+                                }`}
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => toggleFavorite(item.id, e)}
+                                    className="text-sm focus:outline-none shrink-0"
+                                    title={isFav ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+                                  >
+                                    {isFav ? '⭐' : '☆'}
+                                  </button>
+                                  {item.logo ? (
+                                    <img src={item.logo} alt="" className="w-8 h-8 rounded-lg object-contain bg-black/40 p-0.5 shrink-0 border border-slate-800" onError={e => { e.target.style.display = 'none'; }} />
+                                  ) : (
+                                    <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-xs font-bold shrink-0 text-violet-300">TV</div>
+                                  )}
+                                  <div className="min-w-0">
+                                    <div className="text-xs font-bold truncate leading-snug">{item.title}</div>
+                                    <div className="text-[10px] text-slate-400 truncate">{item.categoryName}</div>
+                                  </div>
+                                </div>
+                                <span className={`px-2 py-0.5 rounded-lg text-[9px] font-extrabold uppercase shrink-0 ${isSelected ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                                  {isSelected ? 'Al Aire' : 'Ver'}
+                                </span>
+                              </div>
+                            );
+                          })
+                        )}
+
+                        {visibleItems.length < filteredItems.length && (
+                          <button onClick={() => setVisibleLimit(prev => prev + 60)} className="w-full py-2.5 mt-2 rounded-2xl bg-slate-900 hover:bg-slate-800 text-xs font-bold text-violet-300 border border-slate-800">
+                            Cargar más canales...
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
 
-                  <div key={activeTab + '-' + selectedCategory} className="flex-1 overflow-y-auto pr-1">
-                    {visibleItems.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 text-xs">
-                        {selectedCategory === 'FAVORITES' ? 'No tienes favoritos guardados aún. Toca la estrella ⭐ en cualquier canal para agregarlo.' : 'No se encontraron resultados.'}
-                      </div>
-                    ) : activeTab === 'LIVE' ? (
-                      <div className="divide-y divide-slate-800/60">
-                        {visibleItems.map((item, idx) => {
-                          const isFav = favorites.includes(item.id);
-                          const isFocused = focusedIndex === idx;
-                          return (
-                            <div
-                              key={item.id}
-                              id={`item-${idx}`}
-                              onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
-                              className={`p-3 rounded-xl cursor-pointer transition flex items-center justify-between gap-2 ${
-                                isFocused
-                                  ? 'bg-violet-600/30 ring-2 ring-violet-500 text-white'
-                                  : activeItem?.id === item.id
-                                  ? 'bg-violet-600/20 border border-violet-500/40 text-white'
-                                  : 'hover:bg-slate-800/50 text-slate-300'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <button
-                                  type="button"
-                                  onClick={(e) => toggleFavorite(item.id, e)}
-                                  className="text-sm focus:outline-none shrink-0"
-                                  title={isFav ? 'Quitar de favoritos' : 'Agregar a favoritos'}
-                                >
-                                  {isFav ? '⭐' : '☆'}
-                                </button>
-                                <div className="min-w-0">
-                                  <div className="text-xs font-bold truncate">{item.title}</div>
-                                  <div className="text-[10px] text-violet-300/80 truncate">📁 {item.categoryName}</div>
-                                </div>
-                              </div>
-                              <span className="px-2.5 py-1 rounded-lg bg-violet-600/30 text-violet-200 text-[10px] font-semibold shrink-0">Ver</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                        {visibleItems.map((item, idx) => {
-                          const isFav = favorites.includes(item.id);
-                          const isFocused = focusedIndex === idx;
-                          return (
-                            <div
-                              key={item.id}
-                              id={`item-${idx}`}
-                              onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
-                              className={`group relative rounded-xl overflow-hidden cursor-pointer border transition transform ${
-                                isFocused
-                                  ? 'ring-2 ring-violet-400 scale-[1.03] shadow-lg shadow-violet-500/30 border-violet-400'
-                                  : activeItem?.id === item.id
-                                  ? 'border-violet-500 shadow-lg shadow-violet-500/20'
-                                  : 'border-slate-800 hover:border-slate-600 hover:scale-[1.02]'
-                              }`}
-                            >
-                              <div className="aspect-[2/3] bg-slate-900 overflow-hidden relative">
-                                {item.logo ? (
-                                  <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:opacity-80 transition" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
-                                ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-700">🎬</div>
-                                )}
-                                
-                                <button
-                                  type="button"
-                                  onClick={(e) => toggleFavorite(item.id, e)}
-                                  className="absolute top-1.5 right-1.5 z-10 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-xs backdrop-blur-sm shadow"
-                                >
-                                  {isFav ? '⭐' : '☆'}
-                                </button>
-
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent flex flex-col justify-end p-2">
-                                  <div className="text-[11px] font-bold text-white line-clamp-2 leading-tight">{item.title}</div>
-                                  <div className="text-[9px] text-violet-300 truncate mt-0.5">{item.categoryName}</div>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {visibleItems.length < filteredItems.length && (
-                      <button onClick={() => setVisibleLimit(prev => prev + 60)} className="w-full py-2.5 mt-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-violet-300">
-                        Cargar más contenidos...
+                  {/* REPRODUCTOR CINEMÁTICO GRANDE */}
+                  <div className={`${isSidebarOpen ? 'lg:col-span-8' : 'lg:col-span-12'} transition-all`}>
+                    {!isSidebarOpen && (
+                      <button
+                        onClick={() => setIsSidebarOpen(true)}
+                        className="mb-3 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black shadow-lg flex items-center gap-2"
+                      >
+                        <span>📂</span> Mostrar Guía de Canales
                       </button>
                     )}
+                    <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* ============================================================ */
+              /* LAYOUT OTT CARTELERA (PELÍCULAS & SERIES ESTILO NETFLIX)      */
+              /* ============================================================ */
+              <div className="space-y-6">
+                {/* HERO BANNER DE ESTRENO DESTACADO */}
+                {heroItem && (
+                  <div className="relative rounded-3xl overflow-hidden bg-gradient-to-r from-violet-950 via-slate-900 to-slate-950 border border-slate-800 p-6 sm:p-10 shadow-2xl flex flex-col md:flex-row items-center gap-8 min-h-[340px]">
+                    <div className="flex-1 space-y-3 z-10">
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-600/30 border border-violet-500/40 text-[10px] font-extrabold tracking-wider uppercase text-violet-300">
+                        🔥 Estreno Recomendado
+                      </div>
+                      <h2 className="text-2xl sm:text-4xl font-black text-white tracking-tight">{heroItem.title}</h2>
+                      <p className="text-xs sm:text-sm text-slate-300 max-w-xl line-clamp-3 leading-relaxed">
+                        Disfruta de la mejor calidad y audio remasterizado directamente en Full Premium TvGo. Disponible sin límites en tu plan anual.
+                      </p>
+                      <div className="flex items-center gap-3 pt-2">
+                        <button
+                          onClick={() => handleSelectItem(heroItem)}
+                          className="px-6 py-3 rounded-2xl bg-white text-slate-950 font-black text-xs hover:bg-slate-200 shadow-xl transition flex items-center gap-2 active:scale-95"
+                        >
+                          <span>▶</span> Ver Ahora
+                        </button>
+                        <button
+                          onClick={(e) => toggleFavorite(heroItem.id, e)}
+                          className="px-5 py-3 rounded-2xl bg-slate-900/80 hover:bg-slate-800 border border-slate-700 text-white font-bold text-xs transition flex items-center gap-2"
+                        >
+                          {favorites.includes(heroItem.id) ? '⭐ Guardada' : '+ Mi Lista'}
+                        </button>
+                      </div>
+                    </div>
+                    {heroItem.logo && (
+                      <div className="w-48 sm:w-60 aspect-[2/3] rounded-2xl overflow-hidden shadow-2xl border border-white/10 shrink-0">
+                        <img src={heroItem.logo} alt="" className="w-full h-full object-cover" />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* SELECTOR DE GÉNERO Y BUSCADOR */}
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs no-scrollbar">
+                    <button
+                      onClick={() => { setSelectedCategory('FAVORITES'); setVisibleLimit(80); }}
+                      className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition ${selectedCategory === 'FAVORITES' ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-900 text-slate-300 border border-slate-800'}`}
+                    >
+                      ⭐ Mi Lista ({favorites.length})
+                    </button>
+                    <button
+                      onClick={() => { setSelectedCategory('ALL'); setVisibleLimit(80); }}
+                      className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition ${selectedCategory === 'ALL' ? 'bg-violet-600 text-white font-bold' : 'bg-slate-900 text-slate-300 border border-slate-800'}`}
+                    >
+                      Todo el Catálogo
+                    </button>
+                    {currentCategories.slice(0, 15).map(cat => (
+                      <button
+                        key={cat.category_id}
+                        onClick={() => { setSelectedCategory(String(cat.category_id)); setVisibleLimit(80); }}
+                        className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition ${selectedCategory === String(cat.category_id) ? 'bg-violet-600 text-white font-bold' : 'bg-slate-900 text-slate-300 border border-slate-800'}`}
+                      >
+                        {cat.category_name}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="w-full sm:w-72">
+                    <input
+                      type="text"
+                      placeholder="Buscar por título..."
+                      value={search}
+                      onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }}
+                      className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white"
+                    />
                   </div>
                 </div>
 
-                <div className="xl:col-span-7">
-                  <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
+                {activeItem && (activeItem.type === 'MOVIE' || activeItem.type === 'EPISODE') && (
+                  <div className="max-w-4xl mx-auto">
+                    <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
+                  </div>
+                )}
+
+                {/* GRILLA DE PÓSTERS OTT */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
+                  {visibleItems.map((item, idx) => {
+                    const isFav = favorites.includes(item.id);
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => handleSelectItem(item)}
+                        className="group relative rounded-2xl overflow-hidden cursor-pointer border border-slate-800/80 bg-slate-900 transition-all transform hover:-translate-y-1.5 hover:shadow-2xl hover:border-violet-500/80"
+                      >
+                        <div className="aspect-[2/3] w-full bg-slate-950 overflow-hidden relative">
+                          {item.logo ? (
+                            <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" loading="lazy" onError={e => { e.target.style.display = 'none'; }} />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-slate-700">🎬</div>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={(e) => toggleFavorite(item.id, e)}
+                            className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-xs shadow-lg hover:scale-110 transition"
+                          >
+                            {isFav ? '⭐' : '☆'}
+                          </button>
+
+                          <div className="absolute inset-0 bg-gradient-to-t from-[#05070E] via-transparent to-transparent flex flex-col justify-end p-2.5">
+                            <div className="text-xs font-bold text-white line-clamp-2 leading-snug">{item.title}</div>
+                            <div className="text-[10px] text-violet-300 font-medium truncate mt-0.5">{item.categoryName}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
+
+                {visibleItems.length < filteredItems.length && (
+                  <div className="text-center pt-4">
+                    <button
+                      onClick={() => setVisibleLimit(prev => prev + 60)}
+                      className="px-8 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-violet-300 font-bold text-xs border border-slate-800 shadow-xl transition"
+                    >
+                      Cargar más títulos...
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </main>
 
+          {/* MODALES MERCADO PAGO / LICENCIAS / APPS */}
           {paymentSuccessModal && (
-            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-[#0B0F19] border border-emerald-500/60 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
+            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+              <div className="bg-[#0B0F19] border border-emerald-500/50 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
                 <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-3xl mx-auto">🎉</div>
-                <h3 className="text-xl font-extrabold text-white">¡Pago Acreditado con Éxito!</h3>
+                <h3 className="text-xl font-black text-white">¡Pago Acreditado!</h3>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  Tu suscripción anual ha sido activada en este dispositivo por <strong className="text-emerald-400">365 días completos</strong>. Disfruta de toda la programación sin interrupciones.
+                  Tu suscripción anual ha sido activada en este dispositivo por <strong className="text-emerald-400">365 días</strong>.
                 </p>
                 <button
-                  onClick={() => {
-                    setPaymentSuccessModal(false);
-                    syncDeviceWithServer();
-                  }}
-                  className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg transition"
+                  onClick={() => { setPaymentSuccessModal(false); syncDeviceWithServer(); }}
+                  className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-lg transition"
                 >
-                  Entrar a la Plataforma
+                  Entrar a Disfrutar
                 </button>
               </div>
             </div>
           )}
 
           {paymentFailureModal && (
-            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
               <div className="bg-[#0B0F19] border border-amber-500/50 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
                 <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-3xl mx-auto">⚠️</div>
-                <h3 className="text-xl font-extrabold text-white">Pago no completado</h3>
+                <h3 className="text-xl font-black text-white">Pago no completado</h3>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  El proceso de pago en Webpay o Mercado Pago fue cancelado o no se acreditó. Si necesitas ayuda o prefieres pagar mediante transferencia, estamos a tu disposición por WhatsApp.
+                  El proceso de pago fue cancelado o no se acreditó. Si necesitas asistencia por WhatsApp estamos disponibles para ayudarte.
                 </p>
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => setPaymentFailureModal(false)}
-                    className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition"
-                  >
-                    Cerrar
-                  </button>
-                  <button
-                    onClick={() => {
-                      setPaymentFailureModal(false);
-                      setShowLicenseModal(true);
-                    }}
-                    className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs transition"
-                  >
-                    Reintentar Pago
-                  </button>
+                  <button onClick={() => setPaymentFailureModal(false)} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-200 font-bold text-xs">Cerrar</button>
+                  <button onClick={() => { setPaymentFailureModal(false); setShowLicenseModal(true); }} className="flex-1 py-2.5 rounded-xl bg-violet-600 text-white font-bold text-xs">Reintentar</button>
                 </div>
               </div>
             </div>
@@ -901,43 +1061,22 @@
           {showLicenseModal && (
             <LicenseModal
               deviceId={deviceId}
-              deviceAccess={deviceAccess}
               pricing={pricing}
               exchange={exchange}
               selectedCurrency={selectedCurrency}
               setSelectedCurrency={setSelectedCurrency}
               formatConvertedPrice={formatConvertedPrice}
-              loginMode={loginMode}
               onClose={() => setShowLicenseModal(false)}
-              onActivated={(newAccess) => {
-                setDeviceAccess(newAccess);
-                setShowLicenseModal(false);
-              }}
+              onActivated={(newAccess) => { setDeviceAccess(newAccess); setShowLicenseModal(false); }}
             />
           )}
 
-          {showAppsModal && (
-            <PlatformsModal
-              deferredPwaPrompt={deferredPwaPrompt}
-              onClose={() => setShowAppsModal(false)}
-            />
-          )}
+          {showAppsModal && <PlatformsModal deferredPwaPrompt={deferredPwaPrompt} onClose={() => setShowAppsModal(false)} />}
         </div>
       );
     }
 
-    function LicenseModal({
-      deviceId,
-      deviceAccess,
-      pricing,
-      exchange,
-      selectedCurrency,
-      setSelectedCurrency,
-      formatConvertedPrice,
-      loginMode,
-      onClose,
-      onActivated
-    }) {
+    function LicenseModal({ deviceId, pricing, exchange, selectedCurrency, setSelectedCurrency, formatConvertedPrice, onClose, onActivated }) {
       const [licenseInput, setLicenseInput] = useState('');
       const [activating, setActivating] = useState(false);
       const [payingOnline, setPayingOnline] = useState(false);
@@ -956,7 +1095,7 @@
           if (data.init_point) {
             window.location.href = data.init_point;
           } else {
-            throw new Error(data.error || 'No se pudo generar el enlace de Mercado Pago');
+            throw new Error(data.error || 'No se pudo generar la preferencia');
           }
         } catch (err) {
           setFeedback(err.message);
@@ -986,126 +1125,72 @@
         }
       };
 
-      const currencies = [
-        { code: 'CLP', name: '🇨🇱 Peso Chileno (CLP)' },
-        { code: 'PEN', name: '🇵🇪 Sol Peruano (PEN)' },
-        { code: 'USD', name: '🇺🇸 Dólar (USD)' },
-        { code: 'EUR', name: '🇪🇺 Euro (EUR)' },
-        { code: 'ARS', name: '🇦🇷 Peso Argentino (ARS)' },
-        { code: 'MXN', name: '🇲🇽 Peso Mexicano (MXN)' },
-        { code: 'COP', name: '🇨🇴 Peso Colombiano (COP)' },
-        { code: 'BRL', name: '🇧🇷 Real Brasileño (BRL)' }
-      ];
-
       return (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 lg:p-8 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
-                <h3 className="text-lg font-extrabold text-white">Activar Licencia Anual (365 Días)</h3>
+                <h3 className="text-lg font-black text-white">Activar Licencia Anual (365 Días)</h3>
                 <p className="text-xs text-slate-400">ID Dispositivo: <strong className="text-violet-300 font-mono">{deviceId}</strong></p>
               </div>
-              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700 transition">✕ Cerrar</button>
-            </div>
-
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-300">Moneda de referencia:</span>
-              <select
-                value={selectedCurrency}
-                onChange={e => setSelectedCurrency(e.target.value)}
-                className="px-3 py-1.5 rounded-xl bg-slate-900 border border-violet-500/40 text-white font-bold"
-              >
-                {currencies.map(c => (
-                  <option key={c.code} value={c.code}>{c.name}</option>
-                ))}
-              </select>
+              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700">✕ Cerrar</button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="p-4 rounded-2xl bg-violet-950/40 border border-violet-500/50 space-y-3 flex flex-col justify-between">
+              <div className="p-4 rounded-2xl bg-violet-950/40 border border-violet-500/40 space-y-3 flex flex-col justify-between">
                 <div>
-                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-violet-600 text-white">Cliente Oficial Full Premium</span>
-                  <div className="text-xl font-extrabold text-white pt-1.5">
-                    {formatConvertedPrice(pricing.priceOfficialCLP)} <span className="text-xs font-normal text-slate-400">/ Año</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Precio base: ${pricing.priceOfficialCLP.toLocaleString('es-CL')} CLP anuales</p>
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-violet-600 text-white">Cliente Oficial</span>
+                  <div className="text-2xl font-black text-white pt-2">${pricing.priceOfficialCLP.toLocaleString('es-CL')} <span className="text-xs font-normal text-slate-400">CLP / Año</span></div>
                 </div>
                 <button
                   type="button"
                   onClick={() => handlePayWithMercadoPago('OFFICIAL')}
                   disabled={payingOnline}
-                  className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-extrabold text-xs shadow-lg transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-black text-xs shadow-lg transition"
                 >
-                  <span>💳 Pagar $4.000 CLP</span>
+                  💳 Pagar $4.000 CLP
                 </button>
               </div>
 
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-700 space-y-3 flex flex-col justify-between">
                 <div>
-                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">Cliente Lista Propia (M3U / Xtream)</span>
-                  <div className="text-xl font-extrabold text-white pt-1.5">
-                    {formatConvertedPrice(pricing.priceExternalCLP)} <span className="text-xs font-normal text-slate-400">/ Año</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Precio base: ${pricing.priceExternalCLP.toLocaleString('es-CL')} CLP anuales</p>
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">Lista Propia</span>
+                  <div className="text-2xl font-black text-white pt-2">${pricing.priceExternalCLP.toLocaleString('es-CL')} <span className="text-xs font-normal text-slate-400">CLP / Año</span></div>
                 </div>
                 <button
                   type="button"
                   onClick={() => handlePayWithMercadoPago('EXTERNAL')}
                   disabled={payingOnline}
-                  className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs shadow-lg transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs shadow-lg transition"
                 >
-                  <span>💳 Pagar $6.000 CLP</span>
+                  💳 Pagar $6.000 CLP
                 </button>
               </div>
             </div>
 
             <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
               <div className="text-xs font-bold text-sky-400">⚡ Pasarela Segura Mercado Pago Chile</div>
-              <div className="text-[11px] text-slate-300">
-                Paga con <strong>Webpay Plus</strong>, <strong>CuentaRUT</strong>, <strong>Tarjeta de Débito</strong> o <strong>Crédito</strong>.
-              </div>
-              <div className="text-[10px] text-emerald-400 font-semibold">
-                ✔ Tu aplicación se activa al instante en este dispositivo una vez confirmado el pago.
-              </div>
+              <div className="text-[11px] text-slate-300">Paga con <strong>CuentaRUT</strong>, <strong>Webpay Plus</strong>, Débito o Crédito.</div>
             </div>
 
-            {feedback && (
-              <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs text-center font-medium">
-                {feedback}
-              </div>
-            )}
+            {feedback && <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs text-center">{feedback}</div>}
 
             <form onSubmit={handleActivate} className="space-y-2 pt-3 border-t border-slate-800">
-              <label className="block text-xs font-bold text-slate-300">¿Ya tienes un código generado previamente?</label>
+              <label className="block text-xs font-bold text-slate-300">¿Tienes un código de activación?</label>
               <div className="flex gap-2">
                 <input
                   type="text"
-                  placeholder="Ej: FP4K-8A9F-2C1D"
+                  placeholder="Ej: FP4K-XXXX-XXXX"
                   value={licenseInput}
                   onChange={e => setLicenseInput(e.target.value)}
-                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white focus:outline-none focus:border-violet-500"
+                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white"
                   required
                 />
-                <button
-                  type="submit"
-                  disabled={activating}
-                  className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 transition"
-                >
+                <button type="submit" disabled={activating} className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700">
                   {activating ? 'Validando...' : 'Canjear'}
                 </button>
               </div>
             </form>
-
-            <div className="pt-2 text-center">
-              <a
-                href={`https://wa.me/56979429123?text=${encodeURIComponent(`Hola! Quiero consultar por la activación de Full Premium TvGo para mi Dispositivo ID: ${deviceId}`)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-slate-400 hover:text-emerald-400 transition"
-              >
-                💬 ¿Problemas para pagar? Escríbenos por WhatsApp: <strong className="text-white">+56979429123</strong>
-              </a>
-            </div>
           </div>
         </div>
       );
@@ -1117,31 +1202,23 @@
           deferredPwaPrompt.prompt();
           await deferredPwaPrompt.userChoice;
         } else {
-          alert('Para instalar la WebApp: En Chrome/Edge o Android pulsa el menú (⋮) y elige "Instalar aplicación" o "Agregar a pantalla principal".');
+          alert('Para instalar la WebApp: En Chrome/Edge pulsa el menú (⋮) y elige "Instalar aplicación".');
         }
       };
 
       return (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-[#0B0F19] border border-slate-800 rounded-3xl max-w-xl w-full p-6 shadow-2xl space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-lg font-extrabold text-white">📲 Descargar e Instalar Full Premium TvGo</h3>
+              <h3 className="text-lg font-black text-white">📲 Instalar Full Premium TvGo</h3>
               <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold hover:bg-slate-700">✕</button>
             </div>
 
             <div className="p-4 rounded-2xl bg-gradient-to-r from-orange-600/20 via-amber-600/20 to-violet-600/20 border border-orange-500/40 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-extrabold text-orange-300 text-sm flex items-center gap-1.5">
-                  📺 Instalación en TV Box / Android TV (Downloader)
-                </span>
-                <span className="px-2 py-0.5 rounded bg-orange-500/30 text-orange-200 text-[10px] font-bold">Rápido</span>
-              </div>
-              <p className="text-slate-300 text-xs">
-                Abre la aplicación <strong>Downloader</strong> en tu televisor e ingresa este código numérico:
-              </p>
+              <div className="font-extrabold text-orange-300 text-sm">📺 Instalación en TV Box / Android TV (Downloader)</div>
+              <p className="text-slate-300 text-xs">Abre la app <strong>Downloader</strong> en tu televisor e ingresa este código:</p>
               <div className="p-3 bg-slate-950 rounded-xl border border-orange-500/30 text-center">
-                <div className="text-2xl font-mono font-extrabold text-orange-400 tracking-wider">2336838</div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Escribe 2336838 y presiona "Go" para descargar e instalar</div>
+                <div className="text-2xl font-mono font-black text-orange-400 tracking-wider">2336838</div>
               </div>
             </div>
 
@@ -1149,13 +1226,9 @@
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 flex flex-col justify-between">
                 <div>
                   <div className="font-bold text-white text-sm">📱 Android APK Directo</div>
-                  <p className="text-slate-400 mt-1">Descarga directa del instalador nativo APK para celulares o tablets Android.</p>
+                  <p className="text-slate-400 mt-1">Descarga directa para celulares o tablets Android.</p>
                 </div>
-                <a
-                  href="/app.apk"
-                  download="FullPremiumTvGo.apk"
-                  className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-center block shadow transition"
-                >
+                <a href="/app.apk" download="FullPremiumTvGo.apk" className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-center block shadow">
                   📥 Descargar APK
                 </a>
               </div>
@@ -1163,12 +1236,9 @@
               <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 flex flex-col justify-between">
                 <div>
                   <div className="font-bold text-white text-sm">💻 PC / WebApp (PWA)</div>
-                  <p className="text-slate-400 mt-1">Instala la aplicación web ultraligera sin ocupar espacio en disco.</p>
+                  <p className="text-slate-400 mt-1">Instalación liviana en tu navegador sin descargas.</p>
                 </div>
-                <button
-                  onClick={handleInstallPwa}
-                  className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow transition"
-                >
+                <button onClick={handleInstallPwa} className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow">
                   ⚡ Instalar en este Equipo
                 </button>
               </div>
@@ -1179,7 +1249,7 @@
     }
 
     // ========================================================================
-    // REPRODUCTOR BLINDADO CONTRA BLOQUEOS DE AUTOPLAY Y CONGELAMIENTO EN 0:00
+    // REPRODUCTOR FLUIDO & ELEGANTE
     // ========================================================================
     function VideoPlayer({ item, username, password, serverHost }) {
       const videoRef = useRef(null);
@@ -1192,7 +1262,6 @@
         { index: 1, label: 'Pista 2 — Secundario' }
       ]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
-
       const [subtitleTracks, setSubtitleTracks] = useState([]);
       const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
@@ -1224,16 +1293,11 @@
         try {
           videoElement.muted = false;
           videoElement.volume = 1.0;
-          if (playerInstance) {
-            await playerInstance.play();
-          } else {
-            await videoElement.play();
-          }
+          if (playerInstance) await playerInstance.play();
+          else await videoElement.play();
           setIsMutedByPolicy(false);
           setStatus('PLAYING');
         } catch (err) {
-          // Si Chrome bloquea play() con audio, reproducimos silenciado para que el video NUNCA se congele en 0:00
-          console.warn('[AUTOPLAY INTERVENIDO] Continuando en mudo:', err.name);
           videoElement.muted = true;
           setIsMutedByPolicy(true);
           try {
@@ -1302,10 +1366,7 @@
               const detected = [];
               for (let i = 0; i < video.audioTracks.length; i++) {
                 const t = video.audioTracks[i];
-                detected.push({
-                  index: i,
-                  label: `Pista ${i + 1} — ${t.label || t.language || (i === 0 ? 'Español' : 'Inglés')}`
-                });
+                detected.push({ index: i, label: `Pista ${i + 1} — ${t.label || t.language || (i === 0 ? 'Español' : 'Inglés')}` });
               }
               setAudioTracks(detected);
             }
@@ -1313,26 +1374,19 @@
         }
       };
 
-      // VIGILANTE DE REPRODUCCIÓN: Destraba cualquier pausa accidental provocada por cambio de stream
       useEffect(() => {
         const video = videoRef.current;
         if (!video) return;
 
         const handleTimeUpdate = () => {
-          if (video.currentTime > 0 && status === 'LOADING') {
-            setStatus('PLAYING');
-          }
+          if (video.currentTime > 0 && status === 'LOADING') setStatus('PLAYING');
         };
 
         const handleCanPlay = () => {
-          if (video.paused) {
-            video.play().catch(() => {});
-          }
+          if (video.paused) video.play().catch(() => {});
           if (video.buffered && video.buffered.length > 0) {
             const bStart = video.buffered.start(0);
-            if (video.currentTime < bStart) {
-              video.currentTime = bStart + 0.05;
-            }
+            if (video.currentTime < bStart) video.currentTime = bStart + 0.05;
           }
         };
 
@@ -1386,90 +1440,37 @@
         }
       };
 
-      const handleUploadSubtitle = (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const rawText = String(ev.target?.result || '');
-          const vttContent = file.name.toLowerCase().endsWith('.srt') ? srtToVtt(rawText) : rawText;
-          const blob = new Blob([vttContent], { type: 'text/vtt' });
-          const blobUrl = URL.createObjectURL(blob);
-          const newSubId = `Subtítulo Local (${file.name})`;
-
-          setSubtitleTracks(prev => [...prev, { id: newSubId, label: newSubId, url: blobUrl }]);
-          setTimeout(() => handleSubtitleChange(newSubId), 150);
-        };
-        reader.readAsText(file);
-      };
-
       const isVod = item?.type === 'MOVIE' || item?.type === 'EPISODE';
 
       return (
-        <div className="bg-[#0B0F19] border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-          <div className="p-3 bg-slate-900/95 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-            {item?.type === 'LIVE' ? (
-              <div className="flex flex-wrap items-center justify-between w-full gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">EN VIVO</span>
-                  <span className="text-slate-300 font-medium truncate max-w-xs">
-                    Canal: <strong className="text-violet-300">{item?.title}</strong>
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {isMutedByPolicy && (
-                    <button
-                      onClick={handleUnmuteClick}
-                      className="px-3 py-1.5 rounded-xl font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition shadow animate-pulse flex items-center gap-1.5"
-                    >
-                      🔊 Activar Audio
-                    </button>
-                  )}
-                  <button
-                    onClick={() => startPlayback()}
-                    className="px-3 py-1.5 rounded-xl font-bold bg-violet-600 hover:bg-violet-500 text-white transition shadow flex items-center gap-1.5"
-                  >
-                    🔄 Recargar Canal
-                  </button>
-                </div>
-              </div>
-            ) : isVod ? (
-              <div className="flex flex-wrap items-center gap-3 w-full">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-violet-300 font-bold">🔊 Audio:</span>
-                  <select
-                    value={selectedAudioTrack}
-                    onChange={(e) => handleAudioChange(e.target.value)}
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-violet-500/40 text-white font-semibold focus:outline-none"
-                  >
-                    {audioTracks.map(t => (
-                      <option key={t.index} value={t.index}>{t.label}</option>
-                    ))}
-                  </select>
-                </div>
+        <div className="bg-[#090C16] border border-slate-800/80 rounded-3xl overflow-hidden shadow-2xl relative">
+          {/* BARRA SUPERIOR DE CONTROLES DEL REPRODUCTOR */}
+          <div className="p-3.5 bg-slate-900/90 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="px-2.5 py-1 rounded-xl bg-violet-600/20 text-violet-300 font-extrabold text-[10px] border border-violet-500/30">
+                {item?.type === 'LIVE' ? 'EN VIVO' : 'VOD CINEMA'}
+              </span>
+              <span className="font-bold text-white truncate max-w-sm">{item?.title || 'Selecciona un contenido'}</span>
+            </div>
 
-                <div className="flex items-center gap-1.5">
-                  <span className="text-violet-300 font-bold">💬 Subtítulos:</span>
-                  <select
-                    value={activeSubtitle}
-                    onChange={(e) => handleSubtitleChange(e.target.value)}
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white font-semibold focus:outline-none"
-                  >
-                    <option value="OFF">Desactivados</option>
-                    {subtitleTracks.map(sub => (
-                      <option key={sub.id} value={sub.label}>{sub.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <label className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer border border-slate-700 transition">
-                  + Subir .SRT
-                  <input type="file" accept=".srt,.vtt" onChange={handleUploadSubtitle} className="hidden" />
-                </label>
-              </div>
-            ) : (
-              <span className="text-slate-400">Selecciona un contenido</span>
-            )}
+            <div className="flex items-center gap-2">
+              {isMutedByPolicy && (
+                <button
+                  onClick={handleUnmuteClick}
+                  className="px-3.5 py-1.5 rounded-xl font-black bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs shadow-lg flex items-center gap-1.5 animate-bounce"
+                >
+                  🔊 Activar Audio
+                </button>
+              )}
+              {item?.type === 'LIVE' && (
+                <button
+                  onClick={() => startPlayback()}
+                  className="px-3 py-1.5 rounded-xl font-bold bg-slate-800 hover:bg-slate-700 text-white text-xs border border-slate-700 transition"
+                >
+                  🔄 Recargar
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="relative aspect-video bg-black flex items-center justify-center">
@@ -1487,20 +1488,10 @@
               ))}
             </video>
 
-            {/* AVISO DISCRETO SI EL NAVEGADOR FORZÓ SILENCIO AL INICIAR */}
-            {isMutedByPolicy && (
-              <div
-                onClick={handleUnmuteClick}
-                className="absolute bottom-16 right-4 z-20 px-3 py-1.5 rounded-xl bg-amber-500/90 text-slate-950 font-black text-xs shadow-2xl cursor-pointer hover:bg-amber-400 transition flex items-center gap-1.5 animate-bounce"
-              >
-                <span>🔊 Toca aquí para activar sonido</span>
-              </div>
-            )}
-
             {status === 'LOADING' && (
-              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
-                <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-                <span className="text-xs text-violet-300 font-semibold">Cargando transmisión...</span>
+              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+                <div className="w-10 h-10 border-3 border-violet-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+                <span className="text-xs text-violet-300 font-bold tracking-wide">Iniciando transmisión ultra fluida...</span>
               </div>
             )}
 
@@ -1509,17 +1500,12 @@
                 <p className="text-amber-400 font-bold text-sm">Problema con la señal del canal</p>
                 <button
                   onClick={() => startPlayback()}
-                  className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold shadow-lg"
+                  className="px-5 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black shadow-xl"
                 >
                   🔄 Reintentar Reproducción
                 </button>
               </div>
             )}
-          </div>
-
-          <div className="p-4 border-t border-slate-800">
-            <h3 className="text-sm font-bold text-white truncate">{item?.title || 'Selecciona un contenido'}</h3>
-            <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">{item?.streamUrl}</p>
           </div>
         </div>
       );

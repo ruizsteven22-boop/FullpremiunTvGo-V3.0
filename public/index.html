@@ -23,6 +23,8 @@
     ::-webkit-scrollbar-track { background: rgba(8, 12, 22, 0.4); }
     ::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.35); border-radius: 9999px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.7); }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
 </head>
 <body class="bg-[#060811] text-slate-100 min-h-screen selection:bg-violet-600 selection:text-white antialiased overflow-x-hidden">
@@ -142,7 +144,6 @@
       const [exchange, setExchange] = useState({ rates: { CLP: 1, PEN: 0.00395, USD: 0.00105, EUR: 0.00097, ARS: 1.05, MXN: 0.021, COP: 4.45, BRL: 0.0059 } });
       const [selectedCurrency, setSelectedCurrency] = useState('CLP');
 
-      // COMUNICADOS DESDE EL PANEL ADMINISTRATIVO
       const [adminNotice, setAdminNotice] = useState(null);
       const [dismissedNotice, setDismissedNotice] = useState(false);
 
@@ -152,7 +153,6 @@
       const [paymentFailureModal, setPaymentFailureModal] = useState(false);
       const [deferredPwaPrompt, setDeferredPwaPrompt] = useState(null);
 
-      // FAVORITOS PERSISTENTES
       const [favorites, setFavorites] = useState(() => {
         try {
           return JSON.parse(localStorage.getItem('tvgo_favorites') || '[]');
@@ -506,6 +506,8 @@
         const targetList = newTab === 'LIVE' ? liveCatalog : newTab === 'MOVIES' ? moviesCatalog : seriesCatalog;
         if (targetList.length > 0 && newTab !== 'SERIES') {
           setActiveItem(targetList[0]);
+        } else if (newTab === 'SERIES') {
+          setActiveItem(null);
         }
       };
 
@@ -640,6 +642,7 @@
 
           {/* CUERPO PRINCIPAL */}
           <main className="flex-1 w-full max-w-[1850px] mx-auto p-2 sm:p-4 lg:p-6">
+            {/* AVISO PREVENTIVO DE VENCIMIENTO */}
             {deviceAccess.allowed && deviceAccess.status === 'TRIAL' && deviceAccess.daysLeft <= 3 && (
               <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/20 via-violet-600/20 to-amber-500/20 border border-amber-500/40 flex flex-wrap items-center justify-between gap-3 shadow-xl backdrop-blur-md">
                 <div className="flex items-center gap-3">
@@ -982,7 +985,55 @@
               /* CARTELERA DE PELÍCULAS Y SERIES CON MI LISTA PROPIA           */
               /* ============================================================ */
               <div className="space-y-6">
-                {heroItem && (
+                {/* SI HAY UN CONTENIDO REPRODUCIÉNDOSE */}
+                {activeItem && (activeItem.type === 'MOVIE' || activeItem.type === 'EPISODE') && (
+                  <div className="max-w-5xl mx-auto space-y-3">
+                    <div className="flex items-center justify-between px-1">
+                      <button
+                        onClick={() => setActiveItem(null)}
+                        className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-bold border border-slate-800 flex items-center gap-2 transition"
+                      >
+                        ← Volver al Catálogo
+                      </button>
+                      <span className="text-xs text-slate-400 font-medium truncate max-w-md">
+                        Reproduciendo: <strong className="text-white">{activeItem.title}</strong>
+                      </span>
+                    </div>
+
+                    <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
+
+                    {/* SELECTOR DE TEMPORADAS Y EPISODIOS SI ES SERIE */}
+                    {seriesEpisodes.length > 0 && (
+                      <div className="bg-[#090C18] border border-slate-800/80 rounded-2xl p-4 space-y-3">
+                        <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
+                          <h4 className="text-xs font-black uppercase text-violet-400 tracking-wider">
+                            Lista de Episodios Disponibles ({seriesEpisodes.length})
+                          </h4>
+                          <span className="text-[10px] text-slate-500 font-mono">Toca un capítulo para reproducir</span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+                          {seriesEpisodes.map((ep, idx) => (
+                            <button
+                              key={ep.id}
+                              onClick={() => setActiveItem(ep)}
+                              className={`p-2.5 rounded-xl text-left text-xs font-semibold truncate transition flex items-center justify-between gap-2 ${
+                                activeItem?.id === ep.id
+                                  ? 'bg-violet-600 text-white font-bold shadow-lg shadow-violet-600/30 ring-1 ring-violet-400'
+                                  : 'bg-slate-950/70 hover:bg-slate-800/80 text-slate-300 border border-slate-800/70'
+                              }`}
+                            >
+                              <span className="truncate">▶ {ep.title}</span>
+                              <span className="text-[10px] opacity-60 font-mono shrink-0">#{idx + 1}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* HERO BANNER SI NO HAY VIDEO EN REPRODUCCIÓN */}
+                {!activeItem && heroItem && (
                   <div className="relative rounded-3xl overflow-hidden bg-gradient-to-r from-violet-950 via-slate-900 to-slate-950 border border-slate-800 p-6 sm:p-10 shadow-2xl flex flex-col md:flex-row items-center gap-8 min-h-[320px]">
                     <div className="flex-1 space-y-3 z-10">
                       <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-600/30 border border-violet-500/40 text-[10px] font-extrabold uppercase text-violet-300">
@@ -997,7 +1048,7 @@
                           onClick={() => handleSelectItem(heroItem)}
                           className="px-6 py-3 rounded-2xl bg-white text-slate-950 font-black text-xs hover:bg-slate-200 shadow-xl transition flex items-center gap-2 active:scale-95"
                         >
-                          <span>▶</span> Reproducir
+                          <span>▶</span> Ver Ahora
                         </button>
                         <button
                           onClick={(e) => toggleFavorite(heroItem.id, e)}
@@ -1015,9 +1066,9 @@
                   </div>
                 )}
 
+                {/* SELECTOR DE GÉNEROS Y BUSCADOR */}
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-                    {/* BOTÓN MI LISTA CON CONTEO EXCLUSIVO DE PELÍCULAS O SERIES */}
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs no-scrollbar">
                     <button
                       onClick={() => { setSelectedCategory('FAVORITES'); setVisibleLimit(80); }}
                       className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition ${
@@ -1038,7 +1089,7 @@
                     >
                       Todos ({currentCatalog.length})
                     </button>
-                    {currentCategories.slice(0, 12).map(cat => (
+                    {currentCategories.slice(0, 14).map(cat => (
                       <button
                         key={cat.category_id}
                         onClick={() => { setSelectedCategory(String(cat.category_id)); setVisibleLimit(80); }}
@@ -1059,21 +1110,18 @@
                       placeholder="Buscar por título..."
                       value={search}
                       onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }}
-                      className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white"
+                      className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
                     />
                   </div>
                 </div>
 
-                {activeItem && (activeItem.type === 'MOVIE' || activeItem.type === 'EPISODE') && (
-                  <div className="max-w-4xl mx-auto">
-                    <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
-                  </div>
-                )}
-
+                {/* GRILLA DE PÓSTERS */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
                   {visibleItems.length === 0 ? (
                     <div className="col-span-full p-12 text-center text-slate-500 text-xs font-semibold">
-                      {selectedCategory === 'FAVORITES' ? 'Aún no has agregado películas o series a Mi Lista. Pulsa ☆ para guardarlas aquí.' : 'No se encontraron títulos.'}
+                      {selectedCategory === 'FAVORITES'
+                        ? 'Aún no tienes títulos en Mi Lista. Pulsa ☆ en cualquier película o serie para guardarla.'
+                        : 'No se encontraron resultados.'}
                     </div>
                   ) : (
                     visibleItems.map((item, idx) => {
@@ -1567,7 +1615,7 @@
             {status === 'LOADING' && (
               <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center pointer-events-none">
                 <div className="w-10 h-10 border-3 border-violet-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-                <span className="text-xs text-violet-300 font-bold tracking-wide">Sintonizando señal en vivo...</span>
+                <span className="text-xs text-violet-300 font-bold tracking-wide">Sintonizando transmisión...</span>
               </div>
             )}
 

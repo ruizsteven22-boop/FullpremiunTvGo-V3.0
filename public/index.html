@@ -45,21 +45,98 @@
       return id;
     }
 
+    function parseM3uPlaylist(m3uContent) {
+      const lines = m3uContent.split(/\r?\n/);
+      const live = [];
+      const movies = [];
+      const series = [];
+      const liveCats = new Set();
+      const movieCats = new Set();
+      const seriesCats = new Set();
+
+      let currentMeta = null;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        if (line.startsWith('#EXTINF:')) {
+          const groupMatch = line.match(/group-title="([^"]+)"/i);
+          const logoMatch = line.match(/tvg-logo="([^"]+)"/i);
+          const commaIndex = line.lastIndexOf(',');
+          const title = commaIndex !== -1 ? line.slice(commaIndex + 1).trim() : 'Canal / Contenido';
+          const group = groupMatch ? groupMatch[1].trim() : 'General';
+          const logo = logoMatch ? logoMatch[1].trim() : '';
+          currentMeta = { title, group, logo };
+        } else if (!line.startsWith('#') && currentMeta) {
+          const url = line;
+          const lowerUrl = url.toLowerCase();
+          const lowerTitle = currentMeta.title.toLowerCase();
+          const lowerGroup = currentMeta.group.toLowerCase();
+
+          const isMovieFile = lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.mkv') || lowerUrl.endsWith('.avi');
+          const isSeriePattern = /s\d{1,2}[\s._-]?e\d{1,2}|temporada|capitulo|episodio/i.test(lowerTitle) || lowerGroup.includes('serie');
+
+          if (isSeriePattern && isMovieFile) {
+            seriesCats.add(currentMeta.group);
+            series.push({
+              type: 'MOVIE',
+              id: `m3u-ser-${series.length}`,
+              title: currentMeta.title,
+              logo: currentMeta.logo,
+              ext: lowerUrl.endsWith('.mkv') ? 'mkv' : 'mp4',
+              categoryId: currentMeta.group,
+              categoryName: currentMeta.group,
+              streamUrl: url
+            });
+          } else if (isMovieFile || lowerGroup.includes('pelicula') || lowerGroup.includes('vod') || lowerGroup.includes('cine')) {
+            movieCats.add(currentMeta.group);
+            movies.push({
+              type: 'MOVIE',
+              id: `m3u-mov-${movies.length}`,
+              title: currentMeta.title,
+              logo: currentMeta.logo,
+              ext: lowerUrl.endsWith('.mkv') ? 'mkv' : 'mp4',
+              categoryId: currentMeta.group,
+              categoryName: currentMeta.group,
+              streamUrl: url
+            });
+          } else {
+            liveCats.add(currentMeta.group);
+            live.push({
+              type: 'LIVE',
+              id: `m3u-live-${live.length}`,
+              title: currentMeta.title,
+              logo: currentMeta.logo,
+              categoryId: currentMeta.group,
+              categoryName: currentMeta.group,
+              streamUrl: url
+            });
+          }
+          currentMeta = null;
+        }
+      }
+
+      return {
+        live,
+        movies,
+        series,
+        categories: {
+          LIVE: Array.from(liveCats).map(g => ({ category_id: g, category_name: g })),
+          MOVIES: Array.from(movieCats).map(g => ({ category_id: g, category_name: g })),
+          SERIES: Array.from(seriesCats).map(g => ({ category_id: g, category_name: g }))
+        }
+      };
+    }
+
     function App() {
       const [deviceId] = useState(getOrCreateDeviceId);
+      const [devicePin, setDevicePin] = useState('----');
       const [deviceAccess, setDeviceAccess] = useState({ allowed: true, status: 'TRIAL', daysLeft: 12 });
-      const [pricing, setPricing] = useState({ priceOfficialCLP: 4000, priceExternalCLP: 6000, whatsappNumber: '+56979429123', officialEmail: 'activaciones@app.fullpremiumtvcl.com' });
-      const [exchange, setExchange] = useState({ rates: { CLP: 1, PEN: 0.00395, USD: 0.00105, EUR: 0.00097, ARS: 1.05, MXN: 0.021, COP: 4.45, BRL: 0.0059 } });
-      const [selectedCurrency, setSelectedCurrency] = useState('CLP');
+      const [serverConfigPlaylist, setServerConfigPlaylist] = useState(null);
 
       const [adminNotice, setAdminNotice] = useState(null);
       const [dismissedNotice, setDismissedNotice] = useState(false);
-
-      const [showLicenseModal, setShowLicenseModal] = useState(false);
-      const [showAppsModal, setShowAppsModal] = useState(false);
-      const [paymentSuccessModal, setPaymentSuccessModal] = useState(false);
-      const [paymentFailureModal, setPaymentFailureModal] = useState(false);
-      const [deferredPwaPrompt, setDeferredPwaPrompt] = useState(null);
 
       const [favorites, setFavorites] = useState(() => {
         try {
@@ -69,14 +146,11 @@
         }
       });
 
-      const [loginMode, setLoginMode] = useState('OFFICIAL');
+      const [manualMode, setManualMode] = useState(false);
       const [activeServerHost, setActiveServerHost] = useState(OFFICIAL_SERVER_HOST);
-      const [customServerUrl, setCustomServerUrl] = useState('');
-      
       const [username, setUsername] = useState('');
       const [password, setPassword] = useState('');
-      const [m3uUrlInput, setM3uUrlInput] = useState('');
-      const [m3uRawText, setM3uRawText] = useState('');
+      const [customHost, setCustomHost] = useState('');
 
       const [auth, setAuth] = useState(false);
       const [activeTab, setActiveTab] = useState('LIVE');
@@ -90,7 +164,6 @@
       const [visibleLimit, setVisibleLimit] = useState(80);
       const [seriesEpisodes, setSeriesEpisodes] = useState([]);
       const [selectedSerieInfo, setSelectedSerieInfo] = useState(null);
-      const [loadingSeriesInfo, setLoadingSeriesInfo] = useState(false);
 
       const [activeItem, setActiveItem] = useState(null);
       const [focusedIndex, setFocusedIndex] = useState(0);
@@ -98,75 +171,63 @@
       const [loading, setLoading] = useState(false);
       const [loadingStatus, setLoadingStatus] = useState('');
 
-      const syncDeviceWithServer = async (clientTypeOverride, providerLabelOverride, userOverride) => {
-        try {
-          const res = await fetch('/api/device/init', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              deviceId,
-              clientType: clientTypeOverride,
-              providerLabel: providerLabelOverride,
-              username: userOverride
-            })
-          });
-          const data = await res.json();
-          if (data.access) setDeviceAccess(data.access);
-          if (data.pricing) setPricing(data.pricing);
-          if (data.exchange) setExchange(data.exchange);
-          if (data.adminNotice && data.adminNotice.active && data.adminNotice.text) {
-            setAdminNotice(data.adminNotice);
-          } else {
-            setAdminNotice(null);
-          }
-        } catch (_) {}
-      };
-
-      useEffect(() => {
-        const urlParams = new URLSearchParams(window.location.search);
-        const status = urlParams.get('status');
-        if (status === 'success') setPaymentSuccessModal(true);
-        else if (status === 'failure') setPaymentFailureModal(true);
-        if (status) window.history.replaceState({}, document.title, window.location.pathname);
-
-        syncDeviceWithServer();
-
-        window.addEventListener('beforeinstallprompt', (e) => {
-          e.preventDefault();
-          setDeferredPwaPrompt(e);
-        });
-      }, []);
-
-      const toggleFavorite = (itemId, e) => {
-        if (e) e.stopPropagation();
-        setFavorites(prev => {
-          const updated = prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId];
-          localStorage.setItem('tvgo_favorites', JSON.stringify(updated));
-          return updated;
-        });
-      };
-
       const fetchJsonViaProxy = async (actionUrl) => {
         const res = await fetch(`/proxy?url=${encodeURIComponent(actionUrl)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       };
 
-      const handleLogin = async (e) => {
-        e.preventDefault();
-        setLoading(true);
-
+      // Iniciar dispositivo y consultar si ya tiene lista en el servidor
+      const syncWithServer = async (autoConnectIfReady = true) => {
         try {
-          const isOfficial = loginMode === 'OFFICIAL';
-          const clientTier = isOfficial ? 'OFFICIAL' : 'EXTERNAL';
-          const label = isOfficial ? 'Full Premium TvGo Oficial' : (loginMode === 'CUSTOM_XTREAM' ? customServerUrl : 'Lista M3U Propia');
+          const res = await fetch('/api/device/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId })
+          });
+          const data = await res.json();
+          if (data.devicePin) setDevicePin(data.devicePin);
+          if (data.access) setDeviceAccess(data.access);
+          if (data.adminNotice && data.adminNotice.active && data.adminNotice.text) {
+            setAdminNotice(data.adminNotice);
+          }
 
-          await syncDeviceWithServer(clientTier, label, username);
+          if (data.playlist) {
+            setServerConfigPlaylist(data.playlist);
+            if (autoConnectIfReady && !auth) {
+              connectWithPlaylist(data.playlist);
+            }
+          }
+        } catch (_) {}
+      };
 
-          const targetHost = isOfficial ? OFFICIAL_SERVER_HOST : customServerUrl.trim().replace(/\/+$/, '');
+      useEffect(() => {
+        syncWithServer(true);
+      }, []);
+
+      const connectWithPlaylist = async (pl) => {
+        setLoading(true);
+        try {
+          if (pl.type === 'M3U') {
+            setLoadingStatus('Cargando lista M3U...');
+            const res = await fetch(`/proxy?url=${encodeURIComponent(pl.m3uUrl)}`);
+            const content = await res.text();
+            const parsed = parseM3uPlaylist(content);
+            setCategories(parsed.categories);
+            setLiveCatalog(parsed.live);
+            setMoviesCatalog(parsed.movies);
+            setSeriesCatalog(parsed.series);
+            if (parsed.live.length > 0) setActiveItem(parsed.live[0]);
+            setAuth(true);
+            return;
+          }
+
+          const targetHost = (pl.host || OFFICIAL_SERVER_HOST).trim().replace(/\/+$/, '');
           setActiveServerHost(targetHost);
+          setUsername(pl.username);
+          setPassword(pl.password);
 
-          const baseApi = `${targetHost}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}`;
+          const baseApi = `${targetHost}/player_api.php?username=${encodeURIComponent(pl.username)}&password=${encodeURIComponent(pl.password)}`;
 
           setLoadingStatus('Cargando categorías...');
           const [liveCats, vodCats, serCats] = await Promise.all([
@@ -200,7 +261,7 @@
               logo: ch.stream_icon || '',
               categoryId: String(ch.category_id || ''),
               categoryName: liveCatMap[String(ch.category_id || '')] || 'TV en Vivo',
-              streamUrl: `${targetHost}/live/${username.trim()}/${password.trim()}/${ch.stream_id}.ts`
+              streamUrl: `${targetHost}/live/${pl.username}/${pl.password}/${ch.stream_id}.ts`
             }));
             setLiveCatalog(mappedLive);
             if (mappedLive.length > 0) setActiveItem(mappedLive[0]);
@@ -221,7 +282,7 @@
               logo: m.stream_icon || '',
               categoryId: String(m.category_id || ''),
               categoryName: vodCatMap[String(m.category_id || '')] || 'Películas',
-              streamUrl: `${targetHost}/movie/${username.trim()}/${password.trim()}/${m.stream_id}.${m.container_extension || 'mp4'}`
+              streamUrl: `${targetHost}/movie/${pl.username}/${pl.password}/${m.stream_id}.${m.container_extension || 'mp4'}`
             })));
           }
 
@@ -239,28 +300,40 @@
 
           setAuth(true);
         } catch (err) {
-          alert('Error de acceso: ' + err.message);
+          alert('Error de conexión con la lista: ' + err.message);
         } finally {
           setLoading(false);
           setLoadingStatus('');
         }
       };
 
+      const handleManualLogin = (e) => {
+        e.preventDefault();
+        connectWithPlaylist({
+          type: 'XTREAM',
+          host: customHost || OFFICIAL_SERVER_HOST,
+          username,
+          password
+        });
+      };
+
+      const toggleFavorite = (itemId, e) => {
+        if (e) e.stopPropagation();
+        setFavorites(prev => {
+          const updated = prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId];
+          localStorage.setItem('tvgo_favorites', JSON.stringify(updated));
+          return updated;
+        });
+      };
+
       const handleSelectItem = async (item) => {
         if (!item) return;
-        if (!deviceAccess.allowed) {
-          setShowLicenseModal(true);
-          return;
-        }
-
-        // Si es una serie, no se reproduce automáticamente: solo se abre su menú de episodios
         if (item.type === 'SERIE') {
           setSelectedSerieInfo(item);
-          setLoadingSeriesInfo(true);
           setSeriesEpisodes([]);
-          setActiveItem(null); // Detener cualquier reproducción previa
+          setActiveItem(null);
           try {
-            const infoUrl = `${activeServerHost}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}&action=get_series_info&series_id=${item.seriesId}`;
+            const infoUrl = `${activeServerHost}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${item.seriesId}`;
             const data = await fetchJsonViaProxy(infoUrl);
             const episodesObj = data?.episodes || {};
             const epList = [];
@@ -274,15 +347,13 @@
                   streamId: ep.id,
                   title: `${item.title} - T${seasonNum}:E${ep.episode_num} - ${ep.title || 'Capítulo'}`,
                   ext,
-                  streamUrl: `${activeServerHost}/series/${username.trim()}/${password.trim()}/${ep.id}.${ext}`
+                  streamUrl: `${activeServerHost}/series/${username}/${password}/${ep.id}.${ext}`
                 });
               });
             });
             setSeriesEpisodes(epList);
           } catch (_) {
             alert('No se pudieron obtener los capítulos.');
-          } finally {
-            setLoadingSeriesInfo(false);
           }
         } else {
           setActiveItem(item);
@@ -297,10 +368,7 @@
       }, [activeTab, liveCatalog, moviesCatalog, seriesCatalog]);
 
       const currentCategories = useMemo(() => categories[activeTab] || [], [categories, activeTab]);
-
-      const currentTabFavorites = useMemo(() => {
-        return currentCatalog.filter(item => favorites.includes(item.id));
-      }, [currentCatalog, favorites]);
+      const currentTabFavorites = useMemo(() => currentCatalog.filter(item => favorites.includes(item.id)), [currentCatalog, favorites]);
 
       const filteredItems = useMemo(() => {
         let list = currentCatalog;
@@ -349,61 +417,30 @@
 
             {auth && (
               <nav className="flex items-center bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-xl gap-1">
-                <button
-                  onClick={() => handleTabChange('LIVE')}
-                  className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${
-                    activeTab === 'LIVE'
-                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
+                <button onClick={() => handleTabChange('LIVE')} className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${activeTab === 'LIVE' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}>
                   <span>📺</span> En Vivo <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{liveCatalog.length}</span>
                 </button>
-                <button
-                  onClick={() => handleTabChange('MOVIES')}
-                  className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${
-                    activeTab === 'MOVIES'
-                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
+                <button onClick={() => handleTabChange('MOVIES')} className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${activeTab === 'MOVIES' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}>
                   <span>🍿</span> Cine <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{moviesCatalog.length}</span>
                 </button>
-                <button
-                  onClick={() => handleTabChange('SERIES')}
-                  className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${
-                    activeTab === 'SERIES'
-                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
+                <button onClick={() => handleTabChange('SERIES')} className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${activeTab === 'SERIES' ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}>
                   <span>📂</span> Series <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{seriesCatalog.length}</span>
                 </button>
               </nav>
             )}
 
             <div className="flex items-center gap-2.5">
-              <button
-                onClick={() => setShowLicenseModal(true)}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black border transition ${
-                  deviceAccess.status === 'LICENSED'
-                    ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
-                    : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
-                }`}
+              <a
+                href="/client.html"
+                target="_blank"
+                className="px-3.5 py-2 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/40 text-violet-300 text-xs font-bold transition flex items-center gap-1.5"
               >
-                {deviceAccess.status === 'LICENSED' ? `✅ 1 Año (${deviceAccess.daysLeft}d)` : `⏳ Prueba (${deviceAccess.daysLeft}d)`}
-              </button>
-
-              <button
-                onClick={() => setShowAppsModal(true)}
-                className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-violet-300 hover:text-white text-xs font-bold transition shadow-lg"
-              >
-                📲 TV Box (Downloader)
-              </button>
+                <span>📱</span> Portal Cliente (Cargar Lista)
+              </a>
 
               {auth && (
                 <button onClick={() => setAuth(false)} className="px-3 py-2 rounded-xl bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-xs font-bold text-rose-300">
-                  Salir
+                  Desconectar
                 </button>
               )}
             </div>
@@ -423,47 +460,109 @@
           {/* CUERPO PRINCIPAL */}
           <main className="flex-1 w-full max-w-[1850px] mx-auto p-3 sm:p-5">
             {!auth ? (
-              <div className="max-w-md mx-auto mt-12 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-7 shadow-2xl space-y-6">
-                <div className="text-center space-y-1">
-                  <h2 className="text-xl font-black text-white">Acceso a Full Premium TvGo</h2>
-                  <p className="text-xs text-slate-400">Ingresa tus credenciales para conectar</p>
+              /* PANTALLA DE BIENVENIDA / EMPAREJAMIENTO ESTILO SMARTONE */
+              <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6">
+                <div className="text-center space-y-2">
+                  <div className="w-14 h-14 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg shadow-violet-600/30">
+                    TV
+                  </div>
+                  <h2 className="text-2xl font-black text-white">Bienvenido a Full Premium TvGo</h2>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    Para disfrutar de tus canales, películas y series sin tipear en el control remoto, gestiona tu pantalla desde tu celular o computadora.
+                  </p>
                 </div>
 
-                <form onSubmit={handleLogin} className="space-y-4">
-                  <div>
-                    <label className="block text-xs text-slate-300 mb-1 font-semibold">Usuario</label>
-                    <input
-                      type="text"
-                      placeholder="Ingresa tu usuario"
-                      value={username}
-                      onChange={e => setUsername(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-300 mb-1 font-semibold">Contraseña</label>
-                    <input
-                      type="password"
-                      placeholder="Ingresa tu contraseña"
-                      value={password}
-                      onChange={e => setPassword(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
-                      required
-                    />
+                {/* Tarjetas de Datos del Televisor */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
+                    <span className="text-[11px] font-extrabold uppercase text-slate-400">ID de esta Pantalla</span>
+                    <div className="text-lg font-mono font-black text-violet-400 select-all tracking-wider">{deviceId}</div>
                   </div>
 
+                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
+                    <span className="text-[11px] font-extrabold uppercase text-slate-400">Tu Clave PIN</span>
+                    <div className="text-2xl font-mono font-black text-emerald-400 tracking-widest">{devicePin}</div>
+                  </div>
+                </div>
+
+                {/* Instrucciones Claras */}
+                <div className="p-4 rounded-2xl bg-violet-950/30 border border-violet-500/30 text-xs text-slate-300 space-y-2">
+                  <div className="font-bold text-white flex items-center gap-1.5">
+                    <span>📲</span> ¿Cómo cargar tus canales?
+                  </div>
+                  <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-300">
+                    <li>Ingresa desde tu teléfono a: <strong className="text-violet-300">app.fullpremiumtvcl.com/client.html</strong></li>
+                    <li>Digita tu <strong>ID</strong> y <strong>PIN</strong> que ves arriba.</li>
+                    <li>Guarda tu cuenta Xtream o enlace M3U y pulsa el botón de abajo.</li>
+                  </ol>
+                </div>
+
+                <div className="space-y-3 pt-2">
                   <button
-                    type="submit"
+                    onClick={() => syncWithServer(true)}
                     disabled={loading}
-                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 text-white font-black text-xs shadow-xl transition disabled:opacity-50"
+                    className="w-full py-4 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 text-white font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
                   >
-                    {loading ? loadingStatus : 'Conectar a la Plataforma'}
+                    <span>🔄</span> {loading ? loadingStatus : 'Sincronizar y Entrar'}
                   </button>
-                </form>
+
+                  <div className="text-center">
+                    <button
+                      onClick={() => setManualMode(!manualMode)}
+                      className="text-xs text-slate-400 hover:text-white transition underline"
+                    >
+                      {manualMode ? 'Ocultar ingreso manual' : '¿Prefieres ingresar tus datos manualmente en este equipo?'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Formulario Manual Opcional */}
+                {manualMode && (
+                  <form onSubmit={handleManualLogin} className="pt-4 border-t border-slate-800 space-y-3 text-xs">
+                    <div>
+                      <label className="block text-slate-300 mb-1 font-semibold">Servidor Xtream (Opcional si usas el oficial)</label>
+                      <input
+                        type="url"
+                        placeholder="http://servidor.com:8080"
+                        value={customHost}
+                        onChange={e => setCustomHost(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-slate-300 mb-1 font-semibold">Usuario</label>
+                        <input
+                          type="text"
+                          value={username}
+                          onChange={e => setUsername(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-300 mb-1 font-semibold">Contraseña</label>
+                        <input
+                          type="password"
+                          value={password}
+                          onChange={e => setPassword(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white"
+                          required
+                        />
+                      </div>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold"
+                    >
+                      Conectar Manualmente
+                    </button>
+                  </form>
+                )}
               </div>
             ) : activeTab === 'LIVE' ? (
-              /* ESTRUCTURA 3 COLUMNAS SIN COLAPSOS */
+              /* REPRODUCTOR DE TV EN VIVO 3 COLUMNAS */
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
                 <aside className="lg:col-span-3 bg-[#090C18] border border-slate-800/80 rounded-3xl p-3.5 flex flex-col h-[750px] shadow-2xl">
                   <div className="pb-3 border-b border-slate-800/80 mb-2 px-2 flex items-center justify-between">
@@ -478,7 +577,7 @@
                       }`}
                     >
                       <span>⭐ Mis Canales</span>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/30">{currentTabFavorites.length}</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/30 font-bold">{currentTabFavorites.length}</span>
                     </button>
                     <button
                       onClick={() => { setSelectedCategory('ALL'); setVisibleLimit(80); }}
@@ -486,7 +585,7 @@
                         selectedCategory === 'ALL' ? 'bg-violet-600 text-white font-black' : 'text-slate-300 hover:bg-slate-800/60'
                       }`}
                     >
-                      <span>🌐 Todos</span>
+                      <span>🌐 Todos los Canales</span>
                       <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/30">{currentCatalog.length}</span>
                     </button>
                     {currentCategories.map(cat => (
@@ -578,7 +677,7 @@
                             Capítulos ({seriesEpisodes.length})
                           </div>
                           <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
-                            {seriesEpisodes.map((ep, idx) => (
+                            {seriesEpisodes.map((ep) => (
                               <button
                                 key={ep.id}
                                 onClick={() => setActiveItem(ep)}
@@ -596,7 +695,6 @@
                   </div>
                 )}
 
-                {/* MODAL / DRAWER DE CAPÍTULOS SI SELECCIONÓ UNA SERIE PERO NO HA DADO PLAY */}
                 {!activeItem && selectedSerieInfo && seriesEpisodes.length > 0 && (
                   <div className="max-w-4xl mx-auto bg-[#090C18] border border-violet-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
                     <div className="flex items-center justify-between pb-3 border-b border-slate-800">
@@ -609,7 +707,7 @@
                       </button>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-96 overflow-y-auto pr-1">
-                      {seriesEpisodes.map((ep, idx) => (
+                      {seriesEpisodes.map((ep) => (
                         <button
                           key={ep.id}
                           onClick={() => setActiveItem(ep)}
@@ -670,7 +768,7 @@
                       className="group relative rounded-2xl overflow-hidden cursor-pointer border border-slate-800/80 bg-slate-900 transition hover:-translate-y-1.5 hover:shadow-2xl hover:border-violet-500/80"
                     >
                       <div className="aspect-[2/3] w-full bg-slate-950 overflow-hidden relative">
-                        {item.logo ? <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:scale-105 transition" loading="lazy" onError={e => { e.target.style.display = 'none'; }} /> : <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-slate-700">🎬</div>}
+                        {item.logo ? <img src={item.logo} alt="" className="w-full h-full object-cover group-hover:scale-105 transition" loading="lazy" onError={e => { e.target.style.display = 'none'; }} /> : <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-slate-700">🎬</div>}
                         <button onClick={(e) => toggleFavorite(item.id, e)} className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/70 flex items-center justify-center text-xs shadow-lg">
                           {favorites.includes(item.id) ? '⭐' : '☆'}
                         </button>
@@ -684,98 +782,16 @@
               </div>
             )}
           </main>
-
-          {/* MODALES */}
-          {showLicenseModal && (
-            <LicenseModal
-              deviceId={deviceId}
-              pricing={pricing}
-              onClose={() => setShowLicenseModal(false)}
-              onActivated={(newAccess) => { setDeviceAccess(newAccess); setShowLicenseModal(false); }}
-            />
-          )}
-
-          {showAppsModal && <PlatformsModal deferredPwaPrompt={deferredPwaPrompt} onClose={() => setShowAppsModal(false)} />}
         </div>
       );
     }
 
-    function LicenseModal({ deviceId, pricing, onClose, onActivated }) {
-      const [licenseInput, setLicenseInput] = useState('');
-      const [activating, setActivating] = useState(false);
-
-      const handleActivate = async (e) => {
-        e.preventDefault();
-        setActivating(true);
-        try {
-          const res = await fetch('/api/license/activate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId, code: licenseInput })
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Código incorrecto');
-          alert(data.message);
-          onActivated(data.access);
-        } catch (err) {
-          alert(err.message);
-        } finally {
-          setActivating(false);
-        }
-      };
-
-      return (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#0A0D1A] border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-lg font-black text-white">Activar Licencia (365 Días)</h3>
-              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold">✕</button>
-            </div>
-            <form onSubmit={handleActivate} className="space-y-3">
-              <input
-                type="text"
-                placeholder="Código de Activación..."
-                value={licenseInput}
-                onChange={e => setLicenseInput(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white"
-                required
-              />
-              <button type="submit" disabled={activating} className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs">
-                {activating ? 'Validando...' : 'Canjear Código'}
-              </button>
-            </form>
-          </div>
-        </div>
-      );
-    }
-
-    function PlatformsModal({ deferredPwaPrompt, onClose }) {
-      return (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#0A0D1A] border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 text-xs">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-lg font-black text-white">Instalar en TV Box (Downloader)</h3>
-              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold">✕</button>
-            </div>
-            <div className="p-4 rounded-2xl bg-orange-600/20 border border-orange-500/40 text-center space-y-1">
-              <p className="text-slate-300 text-xs">Código para la aplicación Downloader:</p>
-              <div className="text-2xl font-mono font-black text-orange-400">2336838</div>
-            </div>
-            <a href="/app.apk" download className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-center block">
-              📥 Descargar APK Directo
-            </a>
-          </div>
-        </div>
-      );
-    }
-
-    // REPRODUCTOR CON LIMPIEZA TOTAL DE CONEXIONES AL DESMONTAR
     function VideoPlayer({ item }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
       const [status, setStatus] = useState('IDLE');
 
-      const cleanupConnections = () => {
+      const cleanup = () => {
         if (playerRef.current) {
           try { playerRef.current.destroy(); } catch (_) {}
           playerRef.current = null;
@@ -791,7 +807,7 @@
 
       const startPlayback = () => {
         if (!item?.streamUrl || !videoRef.current) return;
-        cleanupConnections();
+        cleanup();
         setStatus('LOADING');
 
         const video = videoRef.current;
@@ -841,9 +857,7 @@
 
       useEffect(() => {
         startPlayback();
-        return () => {
-          cleanupConnections(); // Libera el stream al cambiar de video o cerrar
-        };
+        return () => cleanup();
       }, [item]);
 
       return (

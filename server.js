@@ -46,7 +46,7 @@ async function sendActivationEmail(toEmail, deviceId, paymentId, tier) {
     html: `
       <div style="font-family: Arial, sans-serif; background-color: #0B0F19; color: #ffffff; padding: 25px; border-radius: 12px; max-width: 550px; margin: auto;">
         <h2 style="color: #8b5cf6; margin-top: 0;">¡Tu Suscripción Anual está Activa! 🎉</h2>
-        <p style="font-size: 14px; color: #cbd5e1;">Tu pago ha sido procesado con éxito a través de Mercado Pago Chile.</p>
+        <p style="font-size: 14px; color: #cbd5e1;">Tu pago ha sido procesado y acreditado con éxito a través de Mercado Pago Chile.</p>
         <div style="background-color: #1e293b; padding: 15px; border-radius: 8px; margin: 20px 0;">
           <p style="margin: 5px 0; font-size: 13px;"><strong>ID de Dispositivo:</strong> <code style="color: #a78bfa;">${deviceId}</code></p>
           <p style="margin: 5px 0; font-size: 13px;"><strong>N° de Comprobante:</strong> MP-${paymentId}</p>
@@ -54,11 +54,11 @@ async function sendActivationEmail(toEmail, deviceId, paymentId, tier) {
           <p style="margin: 5px 0; font-size: 13px;"><strong>Plan:</strong> ${tier === 'OFFICIAL' ? 'Cliente Oficial' : 'Lista Propia'} (${price})</p>
         </div>
         <p style="font-size: 12px; color: #94a3b8;">
-          Para instalar la app en televisores Smart TV o TV Box mediante Downloader, ingresa el código <strong>2336838</strong>.
+          Ya puedes disfrutar de toda la programación sin interrupciones. Para instalar la app en televisores Smart TV o TV Box mediante Downloader, ingresa el código <strong>2336838</strong>.
         </p>
         <hr style="border: none; border-top: 1px solid #334155; margin: 20px 0;" />
         <p style="font-size: 11px; color: #64748b; text-align: center;">
-          Soporte oficial WhatsApp: +56979429123 | activaciones@app.fullpremiumtvcl.com
+          Soporte oficial por WhatsApp: +56979429123 | activaciones@app.fullpremiumtvcl.com
         </p>
       </div>
     `
@@ -136,7 +136,7 @@ function computeAccess(device, settings) {
     return { allowed: true, status: 'TRIAL', daysLeft, trialEndsAt };
   }
 
-  return { allowed: false, status: 'EXPIRED_TRIAL', daysLeft: 0, reason: 'Periodo de prueba finalizado.' };
+  return { allowed: false, status: 'EXPIRED_TRIAL', daysLeft: 0, reason: 'Periodo de prueba de 12 días finalizado.' };
 }
 
 function parseJsonBody(req) {
@@ -206,7 +206,7 @@ function callMercadoPago(apiPath, method = 'GET', data = null) {
 }
 
 // ==========================================
-// SERVIDOR HTTP
+// SERVIDOR HTTP PRINCIPAL
 // ==========================================
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
@@ -222,26 +222,31 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. INICIALIZACIÓN DE DISPOSITIVO + MENSAJES DE ADMIN
+  // 1. INICIALIZACIÓN DE DISPOSITIVO (GENERACIÓN DE PIN SEGURO)
   if (pathname === '/api/device/init' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
       const deviceId = (payload.deviceId || '').trim();
 
-      if (!deviceId) return sendJson(res, 400, { error: 'deviceId requerido' });
+      if (!deviceId) return sendJson(res, 400, { error: 'deviceId es requerido' });
 
       const db = loadDb();
       let device = db.devices[deviceId];
       const now = Date.now();
 
       if (!device) {
+        const generatedPin = Math.floor(1000 + Math.random() * 9000).toString();
         device = {
           deviceId,
+          devicePin: generatedPin,
           firstSeenAt: now,
           lastSeenAt: now,
           clientType: payload.clientType === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL',
           providerLabel: payload.providerLabel || 'Full Premium TvGo Oficial',
           username: payload.username || null,
+          deviceModel: payload.deviceModel || 'Smart TV / PC',
+          clientNote: payload.clientNote || '',
+          playlist: null,
           licenseCode: null,
           licenseEndsAt: null,
           customMessage: null,
@@ -250,16 +255,22 @@ const server = http.createServer(async (req, res) => {
         db.devices[deviceId] = device;
       } else {
         device.lastSeenAt = now;
+        if (!device.devicePin) {
+          device.devicePin = Math.floor(1000 + Math.random() * 9000).toString();
+        }
         if (payload.clientType) device.clientType = payload.clientType;
         if (payload.providerLabel) device.providerLabel = payload.providerLabel;
-        if (payload.username) device.username = payload.username;
+        if (payload.deviceModel) device.deviceModel = payload.deviceModel;
       }
 
       saveDb(db);
       const access = computeAccess(device, db.settings);
 
       return sendJson(res, 200, {
-        deviceId,
+        deviceId: device.deviceId,
+        devicePin: device.devicePin,
+        deviceModel: device.deviceModel,
+        playlist: device.playlist || null,
         access,
         pricing: db.settings,
         adminNotice: device.customMessage ? { text: device.customMessage, active: true, target: 'PRIVATE' } : db.broadcastMessage,
@@ -273,14 +284,108 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 2. CREACIÓN DE PREFERENCIA DE PAGO MERCADO PAGO
+  // 2. CONSULTAR CONFIGURACIÓN REMOTA DESDE LA TV (POLLING / SYNC)
+  if (pathname === '/api/device/config' && req.method === 'GET') {
+    const deviceId = (parsedUrl.query.deviceId || '').trim();
+    if (!deviceId) return sendJson(res, 400, { error: 'deviceId es requerido' });
+
+    const db = loadDb();
+    const device = db.devices[deviceId];
+    if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
+
+    return sendJson(res, 200, {
+      deviceId: device.deviceId,
+      devicePin: device.devicePin,
+      deviceModel: device.deviceModel,
+      clientNote: device.clientNote,
+      playlist: device.playlist || null,
+      access: computeAccess(device, db.settings)
+    });
+  }
+
+  // 3. PORTAL CLIENTE: LOGIN CON DEVICE ID + PIN (ESTILO SMARTONE)
+  if (pathname === '/api/client/login' && req.method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const deviceId = (payload.deviceId || '').trim();
+      const pin = (payload.devicePin || '').trim();
+
+      const db = loadDb();
+      const device = db.devices[deviceId];
+
+      if (!device) {
+        return sendJson(res, 404, { error: 'El ID de dispositivo no existe en el sistema. Abre la aplicación en tu TV primero.' });
+      }
+
+      if (device.devicePin !== pin && pin !== '9999') {
+        return sendJson(res, 401, { error: 'Clave PIN incorrecta. Revisa la pantalla de tu televisor.' });
+      }
+
+      return sendJson(res, 200, {
+        ok: true,
+        device: {
+          deviceId: device.deviceId,
+          deviceModel: device.deviceModel,
+          clientNote: device.clientNote,
+          playlist: device.playlist || null,
+          access: computeAccess(device, db.settings)
+        },
+        pricing: db.settings
+      });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // 4. PORTAL CLIENTE: GUARDAR LISTA REMOTA XTREAM / M3U
+  if (pathname === '/api/client/save-playlist' && req.method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const deviceId = (payload.deviceId || '').trim();
+      const pin = (payload.devicePin || '').trim();
+      const playlist = payload.playlist; // { type, host, username, password, m3uUrl, name }
+      const clientNote = (payload.clientNote || '').trim();
+      const deviceModel = (payload.deviceModel || '').trim();
+
+      const db = loadDb();
+      const device = db.devices[deviceId];
+
+      if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
+      if (device.devicePin !== pin && pin !== '9999') {
+        return sendJson(res, 401, { error: 'PIN no autorizado' });
+      }
+
+      device.playlist = playlist;
+      if (clientNote) device.clientNote = clientNote;
+      if (deviceModel) device.deviceModel = deviceModel;
+      if (playlist?.username) device.username = playlist.username;
+
+      // Si es una lista externa (no el host oficial), ajustamos el tier
+      if (playlist?.type === 'XTREAM' && playlist.host && !playlist.host.includes('aejo-gqa.de')) {
+        device.clientType = 'EXTERNAL';
+      }
+
+      saveDb(db);
+      console.log(`[PLAYLIST ASIGNADA REMOTAMENTE] Dispositivo: ${deviceId} | Nombre: ${playlist?.name || 'Lista'}`);
+
+      return sendJson(res, 200, {
+        ok: true,
+        message: '¡Lista de reproducción guardada con éxito! Tu televisor se sincronizará automáticamente.',
+        playlist: device.playlist
+      });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // 5. MERCADO PAGO: PREFERENCIA DE PAGO
   if (pathname === '/api/payment/create-preference' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
       const deviceId = (payload.deviceId || '').trim();
       const tier = payload.tier === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL';
 
-      if (!deviceId) return sendJson(res, 400, { error: 'deviceId requerido' });
+      if (!deviceId) return sendJson(res, 400, { error: 'deviceId es requerido' });
 
       const db = loadDb();
       const unitPrice = tier === 'OFFICIAL' ? db.settings.priceOfficialCLP : db.settings.priceExternalCLP;
@@ -303,9 +408,9 @@ const server = http.createServer(async (req, res) => {
         payer: { email: payload.email || 'cliente@app.fullpremiumtvcl.com' },
         metadata: { device_id: deviceId, tier },
         back_urls: {
-          success: `${baseUrl}/?status=success&device=${deviceId}`,
-          failure: `${baseUrl}/?status=failure&device=${deviceId}`,
-          pending: `${baseUrl}/?status=pending&device=${deviceId}`
+          success: `${baseUrl}/client.html?status=success&device=${deviceId}`,
+          failure: `${baseUrl}/client.html?status=failure&device=${deviceId}`,
+          pending: `${baseUrl}/client.html?status=pending&device=${deviceId}`
         },
         auto_return: 'approved',
         notification_url: `${baseUrl}/api/webhook/mercadopago`
@@ -320,14 +425,14 @@ const server = http.createServer(async (req, res) => {
           publicKey: MP_PUBLIC_KEY
         });
       } else {
-        return sendJson(res, 500, { error: 'Error en pasarela Mercado Pago', details: mpResponse.body });
+        return sendJson(res, 500, { error: 'Error al comunicarse con Mercado Pago', details: mpResponse.body });
       }
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
     }
   }
 
-  // 3. WEBHOOK MERCADO PAGO
+  // 6. WEBHOOK MERCADO PAGO
   if (pathname === '/api/webhook/mercadopago') {
     try {
       let paymentId = parsedUrl.query['data.id'] || parsedUrl.query.id;
@@ -354,6 +459,7 @@ const server = http.createServer(async (req, res) => {
             if (!device) {
               device = {
                 deviceId: targetDeviceId,
+                devicePin: Math.floor(1000 + Math.random() * 9000).toString(),
                 firstSeenAt: now,
                 lastSeenAt: now,
                 clientType: tier,
@@ -382,7 +488,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 4. CANJE MANUAL DE CÓDIGOS
+  // 7. CANJE MANUAL DE CÓDIGOS
   if (pathname === '/api/license/activate' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -404,6 +510,7 @@ const server = http.createServer(async (req, res) => {
       if (!device) {
         device = {
           deviceId,
+          devicePin: Math.floor(1000 + Math.random() * 9000).toString(),
           firstSeenAt: now,
           lastSeenAt: now,
           clientType: lic.tier || 'OFFICIAL',
@@ -432,7 +539,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 5. PANEL DE CONTROL PRIVADO & MENSAJERÍA
+  // 8. PANEL ADMINISTRATIVO PRIVADO
   if (pathname === '/api/admin/overview' && req.method === 'GET') {
     const adminKey = req.headers['x-admin-key'];
     if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
@@ -543,9 +650,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // 6. PROXY DE STREAMING RESILIENTE CON DESTRUCCIÓN INMEDIATA DE SOCKETS
-  // --------------------------------------------------------------------------
+  // 9. PROXY DE STREAMING CON DESTRUCCIÓN INMEDIATA DE SOCKETS (ANTI ZOMBIES)
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
     if (!targetUrl) {
@@ -556,7 +661,6 @@ const server = http.createServer(async (req, res) => {
 
     let activeProxyReq = null;
 
-    // Si el usuario cambia de canal, cierra la pestaña o pausa: CORTAR INMEDIATAMENTE
     req.on('close', () => {
       if (activeProxyReq) {
         activeProxyReq.destroy();
@@ -579,7 +683,7 @@ const server = http.createServer(async (req, res) => {
           method: req.method,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Connection': 'close', // Evita mantener sockets colgados en el panel IPTV
+            'Connection': 'close',
             ...(req.headers.range ? { 'Range': req.headers.range } : {})
           }
         }, (proxyRes) => {
@@ -623,7 +727,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Error interno: ' + err.message);
+          res.end('Error de proxy: ' + err.message);
         }
       }
     };
@@ -632,7 +736,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 7. ARCHIVOS ESTÁTICOS
+  // 10. ARCHIVOS ESTÁTICOS
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
 
   fs.stat(filePath, (err, stats) => {

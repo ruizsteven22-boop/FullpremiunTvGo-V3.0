@@ -196,7 +196,6 @@
       const connectWithPlaylist = async (pl) => {
         setLoading(true);
         try {
-          // AUTO-DETECCIÓN INTELIGENTE: Si el M3U es un enlace get.php de Xtream Codes
           let targetType = pl.type;
           let targetHost = pl.host;
           let targetUser = pl.username;
@@ -226,7 +225,6 @@
             return;
           }
 
-          // CONEXIÓN DE ALTA VELOCIDAD VÍA API XTREAM
           const finalHost = (targetHost || OFFICIAL_SERVER_HOST).trim().replace(/\/+$/, '');
           setActiveServerHost(finalHost);
           setUsername(targetUser);
@@ -326,10 +324,8 @@
             setAdminNotice(data.adminNotice);
           }
 
-          if (data.playlist) {
-            if (autoConnect) {
-              connectWithPlaylist(data.playlist);
-            }
+          if (data.playlist && autoConnect) {
+            connectWithPlaylist(data.playlist);
           }
         } catch (_) {}
       };
@@ -485,7 +481,7 @@
           {/* CUERPO PRINCIPAL */}
           <main className="flex-1 w-full max-w-[1850px] mx-auto p-3 sm:p-5">
             {!auth ? (
-              /* PANTALLA DE BIENVENIDA / EMPAREJAMIENTO */
+              /* PANTALLA DE EMPAREJAMIENTO SMARTONE */
               <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6">
                 <div className="text-center space-y-2">
                   <div className="w-14 h-14 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg shadow-violet-600/30">
@@ -641,6 +637,7 @@
                       return (
                         <div
                           key={item.id}
+                          id={`item-${idx}`}
                           onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
                           className={`p-2.5 rounded-2xl cursor-pointer transition flex items-center justify-between gap-3 ${
                             isSelected ? 'bg-violet-600/30 border border-violet-500/70 shadow-lg text-white' : 'hover:bg-slate-800/40 text-slate-300'
@@ -682,9 +679,10 @@
                 {activeItem && (activeItem.type === 'MOVIE' || activeItem.type === 'EPISODE') && (
                   <div className="max-w-6xl mx-auto bg-[#090C18] border border-slate-800/80 rounded-3xl p-5 space-y-4 shadow-2xl">
                     <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                      <button onClick={() => setActiveItem(null)} className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-bold text-slate-300">
+                      <button onClick={() => setActiveItem(null)} className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-bold text-slate-300 flex items-center gap-1.5">
                         ← Volver al Catálogo
                       </button>
+                      <span className="text-xs text-slate-300 font-bold truncate max-w-md">{activeItem.title}</span>
                       <a href={activeItem.streamUrl} target="_blank" rel="noreferrer" className="px-3.5 py-2 rounded-xl bg-violet-600/20 text-violet-300 border border-violet-500/30 text-xs font-bold">
                         🚀 Abrir en VLC / App Externa
                       </a>
@@ -742,6 +740,7 @@
                   </div>
                 )}
 
+                {/* SELECTOR DE GÉNEROS Y PÓSTERS */}
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs no-scrollbar">
                     <button
@@ -790,7 +789,7 @@
                       className="group relative rounded-2xl overflow-hidden cursor-pointer border border-slate-800/80 bg-slate-900 transition hover:-translate-y-1.5 hover:shadow-2xl hover:border-violet-500/80"
                     >
                       <div className="aspect-[2/3] w-full bg-slate-950 overflow-hidden relative">
-                        {item.logo ? <img src={item.logo} alt="" className="w-full h-full object-cover group-hover:scale-105 transition" loading="lazy" onError={e => { e.target.style.display = 'none'; }} /> : <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-slate-700">🎬</div>}
+                        {item.logo ? <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:scale-105 transition" loading="lazy" onError={e => { e.target.style.display = 'none'; }} /> : <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-slate-700">🎬</div>}
                         <button onClick={(e) => toggleFavorite(item.id, e)} className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/70 flex items-center justify-center text-xs shadow-lg">
                           {favorites.includes(item.id) ? '⭐' : '☆'}
                         </button>
@@ -808,10 +807,12 @@
       );
     }
 
+    // REPRODUCTOR ROBUSTO
     function VideoPlayer({ item }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
       const [status, setStatus] = useState('IDLE');
+      const [needsUnmute, setNeedsUnmute] = useState(false);
 
       const cleanup = () => {
         if (playerRef.current) {
@@ -831,6 +832,7 @@
         if (!item?.streamUrl || !videoRef.current) return;
         cleanup();
         setStatus('LOADING');
+        setNeedsUnmute(false);
 
         const video = videoRef.current;
         video.muted = false;
@@ -857,10 +859,20 @@
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
-              player.play().then(() => setStatus('PLAYING')).catch(() => {
-                video.muted = true;
-                player.play().catch(() => {});
-                setStatus('PLAYING');
+
+              const playPromise = player.play();
+              if (playPromise && playPromise.catch) {
+                playPromise.catch(() => {
+                  // Si Chrome restringe audio al cambiar canal, arrancar muted para no congelar la imagen en 0:00
+                  video.muted = true;
+                  setNeedsUnmute(true);
+                  player.play().catch(() => {});
+                });
+              }
+
+              player.on(window.mpegts.Events.ERROR, () => {
+                if (video.currentTime > 0) return;
+                setStatus('ERROR');
               });
             } catch (_) {
               setStatus('ERROR');
@@ -873,23 +885,86 @@
         } else {
           video.src = directProxyUrl;
           video.load();
-          video.play().then(() => setStatus('PLAYING')).catch(() => setStatus('PLAYING'));
+          const p = video.play();
+          if (p && p.catch) {
+            p.catch(() => {
+              video.muted = true;
+              setNeedsUnmute(true);
+              video.play().catch(() => {});
+            });
+          }
         }
       };
+
+      useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const handlePlaying = () => setStatus('PLAYING');
+        const handleTimeUpdate = () => {
+          if (video.currentTime > 0 && status === 'LOADING') setStatus('PLAYING');
+        };
+
+        video.addEventListener('playing', handlePlaying);
+        video.addEventListener('timeupdate', handleTimeUpdate);
+
+        return () => {
+          video.removeEventListener('playing', handlePlaying);
+          video.removeEventListener('timeupdate', handleTimeUpdate);
+        };
+      }, [status]);
 
       useEffect(() => {
         startPlayback();
         return () => cleanup();
       }, [item]);
 
+      const handleUnmute = () => {
+        if (videoRef.current) {
+          videoRef.current.muted = false;
+          videoRef.current.volume = 1.0;
+          setNeedsUnmute(false);
+        }
+      };
+
       return (
         <div className="bg-black rounded-3xl overflow-hidden shadow-2xl relative border border-slate-800/90 w-full flex flex-col justify-center">
           <div className="relative aspect-video bg-black flex items-center justify-center">
-            <video ref={videoRef} controls playsInline autoPlay crossOrigin="anonymous" className="w-full h-full object-contain" />
+            <video
+              ref={videoRef}
+              controls
+              playsInline
+              autoPlay
+              crossOrigin="anonymous"
+              className="w-full h-full object-contain cursor-pointer"
+              onClick={handleUnmute}
+            />
+
+            {needsUnmute && (
+              <button
+                onClick={handleUnmute}
+                className="absolute top-4 right-4 z-20 px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow-2xl flex items-center gap-1.5 animate-bounce"
+              >
+                <span>🔊 Activar Audio</span>
+              </button>
+            )}
+
             {status === 'LOADING' && (
               <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center pointer-events-none">
                 <div className="w-10 h-10 border-3 border-violet-500 border-t-transparent rounded-full animate-spin mb-3"></div>
                 <span className="text-xs text-violet-300 font-bold">Cargando transmisión...</span>
+              </div>
+            )}
+
+            {status === 'ERROR' && (
+              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3 z-10">
+                <p className="text-amber-400 font-bold text-sm">Señal temporalmente no disponible</p>
+                <button
+                  onClick={() => startPlayback()}
+                  className="px-5 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black shadow-xl"
+                >
+                  🔄 Reconectar Canal
+                </button>
               </div>
             )}
           </div>

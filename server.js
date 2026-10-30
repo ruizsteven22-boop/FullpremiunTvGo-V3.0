@@ -650,7 +650,9 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 9. PROXY DE STREAMING CON DESTRUCCIÓN INMEDIATA DE SOCKETS (ANTI ZOMBIES)
+  // --------------------------------------------------------------------------
+  // 9. PROXY DE STREAMING CON CERO LATENCIA Y SIN BLOQUEOS EN GET
+  // --------------------------------------------------------------------------
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
     if (!targetUrl) {
@@ -663,7 +665,7 @@ const server = http.createServer(async (req, res) => {
 
     req.on('close', () => {
       if (activeProxyReq) {
-        activeProxyReq.destroy();
+        try { activeProxyReq.destroy(); } catch (_) {}
         activeProxyReq = null;
       }
     });
@@ -697,7 +699,7 @@ const server = http.createServer(async (req, res) => {
           const responseHeaders = {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': '*',
-            'Content-Type': proxyRes.headers['content-type'] || 'video/mp2t',
+            'Content-Type': proxyRes.headers['content-type'] || 'application/json',
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'Expires': '0',
@@ -719,15 +721,20 @@ const server = http.createServer(async (req, res) => {
         proxyReq.on('error', (err) => {
           if (!res.headersSent) {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
-            res.end('Error de transmisión: ' + err.message);
+            res.end('Error de conexión: ' + err.message);
           }
         });
 
-        req.pipe(proxyReq);
+        // CORRECCIÓN CRÍTICA: En GET o HEAD no se hace pipe del body
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          proxyReq.end();
+        } else {
+          req.pipe(proxyReq);
+        }
       } catch (err) {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Error de proxy: ' + err.message);
+          res.end('Error interno: ' + err.message);
         }
       }
     };

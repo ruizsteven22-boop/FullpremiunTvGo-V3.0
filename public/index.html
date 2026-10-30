@@ -45,6 +45,23 @@
       return id;
     }
 
+    function extractXtreamFromUrl(rawUrl) {
+      if (!rawUrl) return null;
+      try {
+        const uMatch = rawUrl.match(/[?&]username=([^&]+)/i);
+        const pMatch = rawUrl.match(/[?&]password=([^&]+)/i);
+        const hostMatch = rawUrl.match(/^(https?:\/\/[^\/?#]+)/i);
+        if (uMatch && pMatch && hostMatch) {
+          return {
+            host: hostMatch[1],
+            username: decodeURIComponent(uMatch[1]),
+            password: decodeURIComponent(pMatch[1])
+          };
+        }
+      } catch (_) {}
+      return null;
+    }
+
     function parseM3uPlaylist(m3uContent) {
       const lines = m3uContent.split(/\r?\n/);
       const live = [];
@@ -64,7 +81,7 @@
           const groupMatch = line.match(/group-title="([^"]+)"/i);
           const logoMatch = line.match(/tvg-logo="([^"]+)"/i);
           const commaIndex = line.lastIndexOf(',');
-          const title = commaIndex !== -1 ? line.slice(commaIndex + 1).trim() : 'Canal / Contenido';
+          const title = commaIndex !== -1 ? line.slice(commaIndex + 1).trim() : 'Canal';
           const group = groupMatch ? groupMatch[1].trim() : 'General';
           const logo = logoMatch ? logoMatch[1].trim() : '';
           currentMeta = { title, group, logo };
@@ -133,7 +150,6 @@
       const [deviceId] = useState(getOrCreateDeviceId);
       const [devicePin, setDevicePin] = useState('----');
       const [deviceAccess, setDeviceAccess] = useState({ allowed: true, status: 'TRIAL', daysLeft: 12 });
-      const [serverConfigPlaylist, setServerConfigPlaylist] = useState(null);
 
       const [adminNotice, setAdminNotice] = useState(null);
       const [dismissedNotice, setDismissedNotice] = useState(false);
@@ -177,38 +193,26 @@
         return res.json();
       };
 
-      // Iniciar dispositivo y consultar si ya tiene lista en el servidor
-      const syncWithServer = async (autoConnectIfReady = true) => {
-        try {
-          const res = await fetch('/api/device/init', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId })
-          });
-          const data = await res.json();
-          if (data.devicePin) setDevicePin(data.devicePin);
-          if (data.access) setDeviceAccess(data.access);
-          if (data.adminNotice && data.adminNotice.active && data.adminNotice.text) {
-            setAdminNotice(data.adminNotice);
-          }
-
-          if (data.playlist) {
-            setServerConfigPlaylist(data.playlist);
-            if (autoConnectIfReady && !auth) {
-              connectWithPlaylist(data.playlist);
-            }
-          }
-        } catch (_) {}
-      };
-
-      useEffect(() => {
-        syncWithServer(true);
-      }, []);
-
       const connectWithPlaylist = async (pl) => {
         setLoading(true);
         try {
-          if (pl.type === 'M3U') {
+          // AUTO-DETECCIÓN INTELIGENTE: Si el M3U es un enlace get.php de Xtream Codes
+          let targetType = pl.type;
+          let targetHost = pl.host;
+          let targetUser = pl.username;
+          let targetPass = pl.password;
+
+          if (targetType === 'M3U' && pl.m3uUrl) {
+            const detected = extractXtreamFromUrl(pl.m3uUrl);
+            if (detected) {
+              targetType = 'XTREAM';
+              targetHost = detected.host;
+              targetUser = detected.username;
+              targetPass = detected.password;
+            }
+          }
+
+          if (targetType === 'M3U') {
             setLoadingStatus('Cargando lista M3U...');
             const res = await fetch(`/proxy?url=${encodeURIComponent(pl.m3uUrl)}`);
             const content = await res.text();
@@ -222,12 +226,13 @@
             return;
           }
 
-          const targetHost = (pl.host || OFFICIAL_SERVER_HOST).trim().replace(/\/+$/, '');
-          setActiveServerHost(targetHost);
-          setUsername(pl.username);
-          setPassword(pl.password);
+          // CONEXIÓN DE ALTA VELOCIDAD VÍA API XTREAM
+          const finalHost = (targetHost || OFFICIAL_SERVER_HOST).trim().replace(/\/+$/, '');
+          setActiveServerHost(finalHost);
+          setUsername(targetUser);
+          setPassword(targetPass);
 
-          const baseApi = `${targetHost}/player_api.php?username=${encodeURIComponent(pl.username)}&password=${encodeURIComponent(pl.password)}`;
+          const baseApi = `${finalHost}/player_api.php?username=${encodeURIComponent(targetUser)}&password=${encodeURIComponent(targetPass)}`;
 
           setLoadingStatus('Cargando categorías...');
           const [liveCats, vodCats, serCats] = await Promise.all([
@@ -261,13 +266,13 @@
               logo: ch.stream_icon || '',
               categoryId: String(ch.category_id || ''),
               categoryName: liveCatMap[String(ch.category_id || '')] || 'TV en Vivo',
-              streamUrl: `${targetHost}/live/${pl.username}/${pl.password}/${ch.stream_id}.ts`
+              streamUrl: `${finalHost}/live/${targetUser}/${targetPass}/${ch.stream_id}.ts`
             }));
             setLiveCatalog(mappedLive);
             if (mappedLive.length > 0) setActiveItem(mappedLive[0]);
           }
 
-          setLoadingStatus('Cargando cine y series...');
+          setLoadingStatus('Cargando catálogo de Cine y Series...');
           const [moviesData, seriesData] = await Promise.all([
             fetchJsonViaProxy(`${baseApi}&action=get_vod_streams`).catch(() => []),
             fetchJsonViaProxy(`${baseApi}&action=get_series`).catch(() => [])
@@ -282,7 +287,7 @@
               logo: m.stream_icon || '',
               categoryId: String(m.category_id || ''),
               categoryName: vodCatMap[String(m.category_id || '')] || 'Películas',
-              streamUrl: `${targetHost}/movie/${pl.username}/${pl.password}/${m.stream_id}.${m.container_extension || 'mp4'}`
+              streamUrl: `${finalHost}/movie/${targetUser}/${targetPass}/${m.stream_id}.${m.container_extension || 'mp4'}`
             })));
           }
 
@@ -300,12 +305,38 @@
 
           setAuth(true);
         } catch (err) {
-          alert('Error de conexión con la lista: ' + err.message);
+          alert('Error al conectar con la lista: ' + err.message);
         } finally {
           setLoading(false);
           setLoadingStatus('');
         }
       };
+
+      const syncWithServer = async (autoConnect = true) => {
+        try {
+          const res = await fetch('/api/device/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId })
+          });
+          const data = await res.json();
+          if (data.devicePin) setDevicePin(data.devicePin);
+          if (data.access) setDeviceAccess(data.access);
+          if (data.adminNotice?.active && data.adminNotice?.text) {
+            setAdminNotice(data.adminNotice);
+          }
+
+          if (data.playlist) {
+            if (autoConnect) {
+              connectWithPlaylist(data.playlist);
+            }
+          }
+        } catch (_) {}
+      };
+
+      useEffect(() => {
+        syncWithServer(true);
+      }, []);
 
       const handleManualLogin = (e) => {
         e.preventDefault();
@@ -392,12 +423,6 @@
         else setActiveItem(null);
       };
 
-      const heroItem = useMemo(() => {
-        if (activeTab === 'MOVIES' && moviesCatalog.length > 0) return moviesCatalog[0];
-        if (activeTab === 'SERIES' && seriesCatalog.length > 0) return seriesCatalog[0];
-        return null;
-      }, [activeTab, moviesCatalog, seriesCatalog]);
-
       return (
         <div className="min-h-screen flex flex-col bg-[#060811]">
           {/* HEADER OTT */}
@@ -460,19 +485,18 @@
           {/* CUERPO PRINCIPAL */}
           <main className="flex-1 w-full max-w-[1850px] mx-auto p-3 sm:p-5">
             {!auth ? (
-              /* PANTALLA DE BIENVENIDA / EMPAREJAMIENTO ESTILO SMARTONE */
+              /* PANTALLA DE BIENVENIDA / EMPAREJAMIENTO */
               <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6">
                 <div className="text-center space-y-2">
                   <div className="w-14 h-14 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg shadow-violet-600/30">
                     TV
                   </div>
-                  <h2 className="text-2xl font-black text-white">Bienvenido a Full Premium TvGo</h2>
+                  <h2 className="text-2xl font-black text-white">Full Premium TvGo</h2>
                   <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Para disfrutar de tus canales, películas y series sin tipear en el control remoto, gestiona tu pantalla desde tu celular o computadora.
+                    Tu pantalla está lista. Gestiona tus listas y canales desde tu celular o computadora.
                   </p>
                 </div>
 
-                {/* Tarjetas de Datos del Televisor */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
                     <span className="text-[11px] font-extrabold uppercase text-slate-400">ID de esta Pantalla</span>
@@ -485,15 +509,14 @@
                   </div>
                 </div>
 
-                {/* Instrucciones Claras */}
                 <div className="p-4 rounded-2xl bg-violet-950/30 border border-violet-500/30 text-xs text-slate-300 space-y-2">
                   <div className="font-bold text-white flex items-center gap-1.5">
                     <span>📲</span> ¿Cómo cargar tus canales?
                   </div>
                   <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-300">
-                    <li>Ingresa desde tu teléfono a: <strong className="text-violet-300">app.fullpremiumtvcl.com/client.html</strong></li>
-                    <li>Digita tu <strong>ID</strong> y <strong>PIN</strong> que ves arriba.</li>
-                    <li>Guarda tu cuenta Xtream o enlace M3U y pulsa el botón de abajo.</li>
+                    <li>Entra desde tu celular o PC a: <strong className="text-violet-300">app.fullpremiumtvcl.com/client.html</strong></li>
+                    <li>Escribe tu <strong>ID</strong> y <strong>PIN</strong>.</li>
+                    <li>Guarda tu cuenta y pulsa el botón de abajo.</li>
                   </ol>
                 </div>
 
@@ -516,7 +539,6 @@
                   </div>
                 </div>
 
-                {/* Formulario Manual Opcional */}
                 {manualMode && (
                   <form onSubmit={handleManualLogin} className="pt-4 border-t border-slate-800 space-y-3 text-xs">
                     <div>
@@ -562,7 +584,7 @@
                 )}
               </div>
             ) : activeTab === 'LIVE' ? (
-              /* REPRODUCTOR DE TV EN VIVO 3 COLUMNAS */
+              /* REPRODUCTOR DE TV EN VIVO */
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
                 <aside className="lg:col-span-3 bg-[#090C18] border border-slate-800/80 rounded-3xl p-3.5 flex flex-col h-[750px] shadow-2xl">
                   <div className="pb-3 border-b border-slate-800/80 mb-2 px-2 flex items-center justify-between">

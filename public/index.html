@@ -45,90 +45,6 @@
       return id;
     }
 
-    function parseM3uPlaylist(m3uContent) {
-      const lines = m3uContent.split(/\r?\n/);
-      const live = [];
-      const movies = [];
-      const series = [];
-      const liveCats = new Set();
-      const movieCats = new Set();
-      const seriesCats = new Set();
-
-      let currentMeta = null;
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-
-        if (line.startsWith('#EXTINF:')) {
-          const groupMatch = line.match(/group-title="([^"]+)"/i);
-          const logoMatch = line.match(/tvg-logo="([^"]+)"/i);
-          const commaIndex = line.lastIndexOf(',');
-          const title = commaIndex !== -1 ? line.slice(commaIndex + 1).trim() : 'Canal / Contenido';
-          const group = groupMatch ? groupMatch[1].trim() : 'General';
-          const logo = logoMatch ? logoMatch[1].trim() : '';
-          currentMeta = { title, group, logo };
-        } else if (!line.startsWith('#') && currentMeta) {
-          const url = line;
-          const lowerUrl = url.toLowerCase();
-          const lowerTitle = currentMeta.title.toLowerCase();
-          const lowerGroup = currentMeta.group.toLowerCase();
-
-          const isMovieFile = lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.mkv') || lowerUrl.endsWith('.avi');
-          const isSeriePattern = /s\d{1,2}[\s._-]?e\d{1,2}|temporada|capitulo|episodio/i.test(lowerTitle) || lowerGroup.includes('serie');
-
-          if (isSeriePattern && isMovieFile) {
-            seriesCats.add(currentMeta.group);
-            series.push({
-              type: 'MOVIE',
-              id: `m3u-ser-${series.length}`,
-              title: currentMeta.title,
-              logo: currentMeta.logo,
-              ext: lowerUrl.endsWith('.mkv') ? 'mkv' : 'mp4',
-              categoryId: currentMeta.group,
-              categoryName: currentMeta.group,
-              streamUrl: url
-            });
-          } else if (isMovieFile || lowerGroup.includes('pelicula') || lowerGroup.includes('vod') || lowerGroup.includes('cine')) {
-            movieCats.add(currentMeta.group);
-            movies.push({
-              type: 'MOVIE',
-              id: `m3u-mov-${movies.length}`,
-              title: currentMeta.title,
-              logo: currentMeta.logo,
-              ext: lowerUrl.endsWith('.mkv') ? 'mkv' : 'mp4',
-              categoryId: currentMeta.group,
-              categoryName: currentMeta.group,
-              streamUrl: url
-            });
-          } else {
-            liveCats.add(currentMeta.group);
-            live.push({
-              type: 'LIVE',
-              id: `m3u-live-${live.length}`,
-              title: currentMeta.title,
-              logo: currentMeta.logo,
-              categoryId: currentMeta.group,
-              categoryName: currentMeta.group,
-              streamUrl: url
-            });
-          }
-          currentMeta = null;
-        }
-      }
-
-      return {
-        live,
-        movies,
-        series,
-        categories: {
-          LIVE: Array.from(liveCats).map(g => ({ category_id: g, category_name: g })),
-          MOVIES: Array.from(movieCats).map(g => ({ category_id: g, category_name: g })),
-          SERIES: Array.from(seriesCats).map(g => ({ category_id: g, category_name: g }))
-        }
-      };
-    }
-
     function App() {
       const [deviceId] = useState(getOrCreateDeviceId);
       const [deviceAccess, setDeviceAccess] = useState({ allowed: true, status: 'TRIAL', daysLeft: 12 });
@@ -157,7 +73,6 @@
       const [activeServerHost, setActiveServerHost] = useState(OFFICIAL_SERVER_HOST);
       const [customServerUrl, setCustomServerUrl] = useState('');
       
-      // CAMPOS VACÍOS PARA INGRESO LIMPIO
       const [username, setUsername] = useState('');
       const [password, setPassword] = useState('');
       const [m3uUrlInput, setM3uUrlInput] = useState('');
@@ -174,6 +89,7 @@
 
       const [visibleLimit, setVisibleLimit] = useState(80);
       const [seriesEpisodes, setSeriesEpisodes] = useState([]);
+      const [selectedSerieInfo, setSelectedSerieInfo] = useState(null);
       const [loadingSeriesInfo, setLoadingSeriesInfo] = useState(false);
 
       const [activeItem, setActiveItem] = useState(null);
@@ -209,16 +125,9 @@
       useEffect(() => {
         const urlParams = new URLSearchParams(window.location.search);
         const status = urlParams.get('status');
-
-        if (status === 'success') {
-          setPaymentSuccessModal(true);
-        } else if (status === 'failure') {
-          setPaymentFailureModal(true);
-        }
-
-        if (status) {
-          window.history.replaceState({}, document.title, window.location.pathname);
-        }
+        if (status === 'success') setPaymentSuccessModal(true);
+        else if (status === 'failure') setPaymentFailureModal(true);
+        if (status) window.history.replaceState({}, document.title, window.location.pathname);
 
         syncDeviceWithServer();
 
@@ -254,38 +163,12 @@
 
           await syncDeviceWithServer(clientTier, label, username);
 
-          if (loginMode === 'CUSTOM_M3U') {
-            setLoadingStatus('Procesando lista M3U...');
-            let content = m3uRawText;
-            if (!content && m3uUrlInput.trim()) {
-              const res = await fetch(`/proxy?url=${encodeURIComponent(m3uUrlInput.trim())}`);
-              if (!res.ok) throw new Error('No se pudo descargar la lista M3U.');
-              content = await res.text();
-            }
-            if (!content || !content.includes('#EXTM3U')) {
-              throw new Error('Archivo o URL M3U inválido.');
-            }
-            const parsed = parseM3uPlaylist(content);
-            setCategories(parsed.categories);
-            setLiveCatalog(parsed.live);
-            setMoviesCatalog(parsed.movies);
-            setSeriesCatalog(parsed.series);
-            if (parsed.live.length > 0) setActiveItem(parsed.live[0]);
-            else if (parsed.movies.length > 0) setActiveItem(parsed.movies[0]);
-            setAuth(true);
-            return;
-          }
-
           const targetHost = isOfficial ? OFFICIAL_SERVER_HOST : customServerUrl.trim().replace(/\/+$/, '');
-
-          if (!targetHost.startsWith('http')) {
-            throw new Error('La URL debe comenzar con http:// o https://');
-          }
-
           setActiveServerHost(targetHost);
+
           const baseApi = `${targetHost}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}`;
 
-          setLoadingStatus('1/4 Obteniendo grupos y categorías...');
+          setLoadingStatus('Cargando categorías...');
           const [liveCats, vodCats, serCats] = await Promise.all([
             fetchJsonViaProxy(`${baseApi}&action=get_live_categories`).catch(() => []),
             fetchJsonViaProxy(`${baseApi}&action=get_vod_categories`).catch(() => []),
@@ -306,83 +189,61 @@
             SERIES: Array.isArray(serCats) ? serCats : []
           });
 
-          setLoadingStatus('2/4 Cargando canales de TV en Vivo...');
+          setLoadingStatus('Cargando canales...');
           const liveData = await fetchJsonViaProxy(`${baseApi}&action=get_live_streams`);
           if (Array.isArray(liveData)) {
-            const mappedLive = liveData.map((ch, idx) => {
-              const catId = String(ch.category_id || '');
-              return {
-                type: 'LIVE',
-                id: `live-${ch.stream_id || idx}`,
-                streamId: ch.stream_id,
-                title: ch.name || `Canal ${idx + 1}`,
-                logo: ch.stream_icon || '',
-                categoryId: catId,
-                categoryName: liveCatMap[catId] || 'TV en Vivo',
-                streamUrl: `${targetHost}/live/${username.trim()}/${password.trim()}/${ch.stream_id}.ts`
-              };
-            });
+            const mappedLive = liveData.map((ch, idx) => ({
+              type: 'LIVE',
+              id: `live-${ch.stream_id || idx}`,
+              streamId: ch.stream_id,
+              title: ch.name || `Canal ${idx + 1}`,
+              logo: ch.stream_icon || '',
+              categoryId: String(ch.category_id || ''),
+              categoryName: liveCatMap[String(ch.category_id || '')] || 'TV en Vivo',
+              streamUrl: `${targetHost}/live/${username.trim()}/${password.trim()}/${ch.stream_id}.ts`
+            }));
             setLiveCatalog(mappedLive);
             if (mappedLive.length > 0) setActiveItem(mappedLive[0]);
           }
 
-          setLoadingStatus('3/4 Cargando catálogo de Películas...');
-          const moviesData = await fetchJsonViaProxy(`${baseApi}&action=get_vod_streams`);
+          setLoadingStatus('Cargando cine y series...');
+          const [moviesData, seriesData] = await Promise.all([
+            fetchJsonViaProxy(`${baseApi}&action=get_vod_streams`).catch(() => []),
+            fetchJsonViaProxy(`${baseApi}&action=get_series`).catch(() => [])
+          ]);
+
           if (Array.isArray(moviesData)) {
-            const mappedMovies = moviesData.map((m, idx) => {
-              const catId = String(m.category_id || '');
-              const ext = m.container_extension || 'mp4';
-              return {
-                type: 'MOVIE',
-                id: `movie-${m.stream_id || idx}`,
-                streamId: m.stream_id,
-                title: m.name || `Película ${idx + 1}`,
-                logo: m.stream_icon || '',
-                ext,
-                categoryId: catId,
-                categoryName: vodCatMap[catId] || 'Películas',
-                streamUrl: `${targetHost}/movie/${username.trim()}/${password.trim()}/${m.stream_id}.${ext}`
-              };
-            });
-            setMoviesCatalog(mappedMovies);
+            setMoviesCatalog(moviesData.map((m, idx) => ({
+              type: 'MOVIE',
+              id: `movie-${m.stream_id || idx}`,
+              streamId: m.stream_id,
+              title: m.name || `Película ${idx + 1}`,
+              logo: m.stream_icon || '',
+              categoryId: String(m.category_id || ''),
+              categoryName: vodCatMap[String(m.category_id || '')] || 'Películas',
+              streamUrl: `${targetHost}/movie/${username.trim()}/${password.trim()}/${m.stream_id}.${m.container_extension || 'mp4'}`
+            })));
           }
 
-          setLoadingStatus('4/4 Cargando catálogo de Series...');
-          const seriesData = await fetchJsonViaProxy(`${baseApi}&action=get_series`);
           if (Array.isArray(seriesData)) {
-            const mappedSeries = seriesData.map((s, idx) => {
-              const catId = String(s.category_id || '');
-              return {
-                type: 'SERIE',
-                id: `serie-${s.series_id || idx}`,
-                seriesId: s.series_id,
-                title: s.name || `Serie ${idx + 1}`,
-                logo: s.cover || '',
-                categoryId: catId,
-                categoryName: serCatMap[catId] || 'Series',
-                streamUrl: ''
-              };
-            });
-            setSeriesCatalog(mappedSeries);
+            setSeriesCatalog(seriesData.map((s, idx) => ({
+              type: 'SERIE',
+              id: `serie-${s.series_id || idx}`,
+              seriesId: s.series_id,
+              title: s.name || `Serie ${idx + 1}`,
+              logo: s.cover || '',
+              categoryId: String(s.category_id || ''),
+              categoryName: serCatMap[String(s.category_id || '')] || 'Series'
+            })));
           }
 
           setAuth(true);
         } catch (err) {
-          alert('Error de conexión: ' + err.message);
+          alert('Error de acceso: ' + err.message);
         } finally {
           setLoading(false);
           setLoadingStatus('');
         }
-      };
-
-      const handleM3uFileUpload = (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          setM3uRawText(String(ev.target?.result || ''));
-        };
-        reader.readAsText(file);
       };
 
       const handleSelectItem = async (item) => {
@@ -391,9 +252,13 @@
           setShowLicenseModal(true);
           return;
         }
-        if (item.type === 'SERIE' && item.seriesId) {
+
+        // Si es una serie, no se reproduce automáticamente: solo se abre su menú de episodios
+        if (item.type === 'SERIE') {
+          setSelectedSerieInfo(item);
           setLoadingSeriesInfo(true);
           setSeriesEpisodes([]);
+          setActiveItem(null); // Detener cualquier reproducción previa
           try {
             const infoUrl = `${activeServerHost}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}&action=get_series_info&series_id=${item.seriesId}`;
             const data = await fetchJsonViaProxy(infoUrl);
@@ -409,16 +274,13 @@
                   streamId: ep.id,
                   title: `${item.title} - T${seasonNum}:E${ep.episode_num} - ${ep.title || 'Capítulo'}`,
                   ext,
-                  subtitles: ep.info?.subtitles || [],
-                  categoryName: `Temporada ${seasonNum}`,
                   streamUrl: `${activeServerHost}/series/${username.trim()}/${password.trim()}/${ep.id}.${ext}`
                 });
               });
             });
             setSeriesEpisodes(epList);
-            if (epList.length > 0) setActiveItem(epList[0]);
           } catch (_) {
-            alert('No se pudieron obtener los episodios de la serie.');
+            alert('No se pudieron obtener los capítulos.');
           } finally {
             setLoadingSeriesInfo(false);
           }
@@ -442,15 +304,10 @@
 
       const filteredItems = useMemo(() => {
         let list = currentCatalog;
-        if (selectedCategory === 'FAVORITES') {
-          list = currentTabFavorites;
-        } else if (selectedCategory !== 'ALL') {
-          list = list.filter(item => String(item.categoryId) === String(selectedCategory));
-        }
+        if (selectedCategory === 'FAVORITES') list = currentTabFavorites;
+        else if (selectedCategory !== 'ALL') list = list.filter(item => String(item.categoryId) === String(selectedCategory));
         const q = search.trim().toLowerCase();
-        if (q) {
-          list = list.filter(item => item.title.toLowerCase().includes(q));
-        }
+        if (q) list = list.filter(item => item.title.toLowerCase().includes(q));
         return list;
       }, [currentCatalog, currentTabFavorites, selectedCategory, search]);
 
@@ -461,14 +318,10 @@
         setSelectedCategory('ALL');
         setSearch('');
         setVisibleLimit(80);
-        setFocusedIndex(0);
         setSeriesEpisodes([]);
-        const targetList = newTab === 'LIVE' ? liveCatalog : newTab === 'MOVIES' ? moviesCatalog : seriesCatalog;
-        if (targetList.length > 0 && newTab !== 'SERIES') {
-          setActiveItem(targetList[0]);
-        } else if (newTab === 'SERIES') {
-          setActiveItem(null);
-        }
+        setSelectedSerieInfo(null);
+        if (newTab === 'LIVE' && liveCatalog.length > 0) setActiveItem(liveCatalog[0]);
+        else setActiveItem(null);
       };
 
       const heroItem = useMemo(() => {
@@ -477,11 +330,9 @@
         return null;
       }, [activeTab, moviesCatalog, seriesCatalog]);
 
-      const applicableClpPrice = loginMode === 'OFFICIAL' ? pricing.priceOfficialCLP : pricing.priceExternalCLP;
-
       return (
         <div className="min-h-screen flex flex-col bg-[#060811]">
-          {/* HEADER OTT SIEMPRE FIJO */}
+          {/* HEADER OTT */}
           <header className="sticky top-0 z-50 backdrop-blur-xl bg-[#080B16]/95 border-b border-slate-800/80 px-4 lg:px-7 py-3 flex flex-wrap items-center justify-between gap-4 shadow-xl">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-violet-600 via-indigo-600 to-purple-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-violet-600/30">
@@ -490,13 +341,9 @@
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-lg font-black tracking-tight text-white">Full Premium <span className="bg-gradient-to-r from-violet-400 to-indigo-300 bg-clip-text text-transparent">TvGo</span></span>
-                  <span className="px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider bg-violet-500/10 text-violet-300 border border-violet-500/20 rounded-full">
-                    Studio
-                  </span>
+                  <span className="px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider bg-violet-500/10 text-violet-300 border border-violet-500/20 rounded-full">Studio</span>
                 </div>
-                <div className="text-[11px] text-slate-400 flex items-center gap-1.5 font-medium">
-                  Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span>
-                </div>
+                <div className="text-[11px] text-slate-400 font-medium">Dispositivo: <span className="font-mono text-slate-200">{deviceId}</span></div>
               </div>
             </div>
 
@@ -504,30 +351,30 @@
               <nav className="flex items-center bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shadow-xl gap-1">
                 <button
                   onClick={() => handleTabChange('LIVE')}
-                  className={`px-4 py-2 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+                  className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${
                     activeTab === 'LIVE'
-                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30 ring-1 ring-violet-400/40'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30'
+                      : 'text-slate-400 hover:text-white'
                   }`}
                 >
                   <span>📺</span> En Vivo <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{liveCatalog.length}</span>
                 </button>
                 <button
                   onClick={() => handleTabChange('MOVIES')}
-                  className={`px-4 py-2 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+                  className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${
                     activeTab === 'MOVIES'
-                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30 ring-1 ring-violet-400/40'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30'
+                      : 'text-slate-400 hover:text-white'
                   }`}
                 >
                   <span>🍿</span> Cine <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{moviesCatalog.length}</span>
                 </button>
                 <button
                   onClick={() => handleTabChange('SERIES')}
-                  className={`px-4 py-2 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+                  className={`px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 ${
                     activeTab === 'SERIES'
-                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30 ring-1 ring-violet-400/40'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                      ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-600/30'
+                      : 'text-slate-400 hover:text-white'
                   }`}
                 >
                   <span>📂</span> Series <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">{seriesCatalog.length}</span>
@@ -538,19 +385,13 @@
             <div className="flex items-center gap-2.5">
               <button
                 onClick={() => setShowLicenseModal(true)}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black border transition-all flex items-center gap-1.5 shadow-lg ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-black border transition ${
                   deviceAccess.status === 'LICENSED'
                     ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
-                    : deviceAccess.allowed
-                    ? 'bg-amber-500/15 border-amber-500/30 text-amber-300'
-                    : 'bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse'
+                    : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
                 }`}
               >
-                {deviceAccess.status === 'LICENSED'
-                  ? `✅ 1 Año (${deviceAccess.daysLeft}d)`
-                  : deviceAccess.allowed
-                  ? `⏳ Prueba (${deviceAccess.daysLeft}d)`
-                  : '🔒 Vencido — Activar'}
+                {deviceAccess.status === 'LICENSED' ? `✅ 1 Año (${deviceAccess.daysLeft}d)` : `⏳ Prueba (${deviceAccess.daysLeft}d)`}
               </button>
 
               <button
@@ -561,149 +402,55 @@
               </button>
 
               {auth && (
-                <button
-                  onClick={() => setAuth(false)}
-                  className="px-3 py-2 rounded-xl bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-xs font-bold text-rose-300 transition"
-                >
+                <button onClick={() => setAuth(false)} className="px-3 py-2 rounded-xl bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-xs font-bold text-rose-300">
                   Salir
                 </button>
               )}
             </div>
           </header>
 
-          {/* BARRA DE COMUNICADO ADMINISTRATIVO */}
+          {/* COMUNICADO GLOBAL */}
           {adminNotice && !dismissedNotice && (
             <div className="bg-gradient-to-r from-violet-900 via-indigo-900 to-purple-900 border-b border-violet-500/50 px-4 py-2.5 flex items-center justify-between text-xs text-white shadow-xl">
               <div className="flex items-center gap-2.5 max-w-4xl mx-auto">
                 <span className="text-base animate-pulse">📢</span>
-                <span className="font-semibold leading-tight">
-                  <strong className="text-violet-200 uppercase font-extrabold mr-1">Aviso:</strong>
-                  {adminNotice.text}
-                </span>
+                <span><strong>Aviso:</strong> {adminNotice.text}</span>
               </div>
-              <button
-                onClick={() => setDismissedNotice(true)}
-                className="px-2 py-0.5 rounded-lg bg-black/40 hover:bg-black/60 text-slate-300 text-[11px] font-bold"
-              >
-                ✕
-              </button>
+              <button onClick={() => setDismissedNotice(true)} className="px-2 py-0.5 rounded-lg bg-black/40 text-slate-300 text-[11px] font-bold">✕</button>
             </div>
           )}
 
-          {/* CONTENIDO PRINCIPAL */}
+          {/* CUERPO PRINCIPAL */}
           <main className="flex-1 w-full max-w-[1850px] mx-auto p-3 sm:p-5">
-            {!deviceAccess.allowed ? (
-              <div className="max-w-md mx-auto mt-12 bg-[#0A0D1A] border border-rose-500/40 rounded-3xl p-8 shadow-2xl text-center space-y-6">
-                <div className="w-16 h-16 mx-auto rounded-3xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-3xl">🔒</div>
-                <div className="space-y-2">
-                  <h2 className="text-2xl font-black text-white">Prueba Finalizada</h2>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    Tu ID <strong className="text-violet-300 font-mono">{deviceId}</strong> ha completado los 12 días de prueba. Activa tu licencia anual de 365 días.
-                  </p>
-                </div>
-                <button
-                  onClick={() => setShowLicenseModal(true)}
-                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 text-white font-black text-xs shadow-xl transition"
-                >
-                  💳 Pagar con Mercado Pago o Canjear
-                </button>
-              </div>
-            ) : !auth ? (
-              <div className="max-w-md mx-auto mt-10 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-7 shadow-2xl space-y-6">
+            {!auth ? (
+              <div className="max-w-md mx-auto mt-12 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-7 shadow-2xl space-y-6">
                 <div className="text-center space-y-1">
                   <h2 className="text-xl font-black text-white">Acceso a Full Premium TvGo</h2>
-                  <p className="text-xs text-slate-400">Ingresa tus credenciales o carga tu lista M3U</p>
-                </div>
-
-                <div className="grid grid-cols-3 gap-1 bg-slate-900 p-1 rounded-2xl border border-slate-800 text-[11px] font-bold">
-                  <button
-                    type="button"
-                    onClick={() => setLoginMode('OFFICIAL')}
-                    className={`py-2 rounded-xl transition ${loginMode === 'OFFICIAL' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    ⭐ Oficial
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLoginMode('CUSTOM_XTREAM')}
-                    className={`py-2 rounded-xl transition ${loginMode === 'CUSTOM_XTREAM' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    🌐 Xtream
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLoginMode('CUSTOM_M3U')}
-                    className={`py-2 rounded-xl transition ${loginMode === 'CUSTOM_M3U' ? 'bg-violet-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    📂 Lista M3U
-                  </button>
+                  <p className="text-xs text-slate-400">Ingresa tus credenciales para conectar</p>
                 </div>
 
                 <form onSubmit={handleLogin} className="space-y-4">
-                  {loginMode === 'CUSTOM_XTREAM' && (
-                    <div>
-                      <label className="block text-xs text-slate-300 mb-1 font-semibold">URL Servidor Xtream</label>
-                      <input
-                        type="url"
-                        placeholder="http://ejemplo.com:8080"
-                        value={customServerUrl}
-                        onChange={e => setCustomServerUrl(e.target.value)}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
-                        required
-                      />
-                    </div>
-                  )}
-
-                  {loginMode !== 'CUSTOM_M3U' ? (
-                    <>
-                      <div>
-                        <label className="block text-xs text-slate-300 mb-1 font-semibold">Usuario</label>
-                        <input
-                          type="text"
-                          placeholder="Ingresa tu usuario"
-                          value={username}
-                          onChange={e => setUsername(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-300 mb-1 font-semibold">Contraseña</label>
-                        <input
-                          type="password"
-                          placeholder="Ingresa tu contraseña"
-                          value={password}
-                          onChange={e => setPassword(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
-                          required
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div>
-                        <label className="block text-xs text-slate-300 mb-1 font-semibold">URL de Lista M3U</label>
-                        <input
-                          type="url"
-                          placeholder="http://servidor.com/get.php?..."
-                          value={m3uUrlInput}
-                          onChange={e => setM3uUrlInput(e.target.value)}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block w-full py-3 px-3 rounded-xl bg-slate-900 border border-dashed border-violet-500/40 text-center text-xs text-violet-300 font-bold cursor-pointer hover:bg-slate-800 transition">
-                          📁 Subir archivo .M3U local
-                          <input type="file" accept=".m3u,.m3u8,.txt" onChange={handleM3uFileUpload} className="hidden" />
-                        </label>
-                        {m3uRawText && <p className="text-[11px] text-emerald-400 mt-1 text-center font-bold">✔ Archivo M3U cargado</p>}
-                      </div>
-                    </>
-                  )}
-
-                  <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-[11px] flex justify-between items-center text-slate-300">
-                    <span>Tarifa anual:</span>
-                    <strong className="text-emerald-400 font-extrabold text-sm">${applicableClpPrice.toLocaleString('es-CL')} CLP</strong>
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1 font-semibold">Usuario</label>
+                    <input
+                      type="text"
+                      placeholder="Ingresa tu usuario"
+                      value={username}
+                      onChange={e => setUsername(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1 font-semibold">Contraseña</label>
+                    <input
+                      type="password"
+                      placeholder="Ingresa tu contraseña"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-violet-500"
+                      required
+                    />
                   </div>
 
                   <button
@@ -716,261 +463,130 @@
                 </form>
               </div>
             ) : activeTab === 'LIVE' ? (
-              /* ============================================================ */
-              /* CONSOLA DE TV EN VIVO ROBUSTA Y SIN COLAPSOS                 */
-              /* ============================================================ */
+              /* ESTRUCTURA 3 COLUMNAS SIN COLAPSOS */
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-                {/* COLUMNA 1: CATEGORÍAS */}
                 <aside className="lg:col-span-3 bg-[#090C18] border border-slate-800/80 rounded-3xl p-3.5 flex flex-col h-[750px] shadow-2xl">
                   <div className="pb-3 border-b border-slate-800/80 mb-2 px-2 flex items-center justify-between">
-                    <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Grupos / Países</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Categorías</span>
                     <span className="text-[10px] font-mono text-slate-500">{currentCategories.length + 2}</span>
                   </div>
-
                   <div className="flex-1 overflow-y-auto space-y-1 pr-1">
                     <button
                       onClick={() => { setSelectedCategory('FAVORITES'); setVisibleLimit(80); }}
                       className={`w-full text-left px-3.5 py-2.5 rounded-2xl text-xs font-bold transition flex items-center justify-between ${
-                        selectedCategory === 'FAVORITES'
-                          ? 'bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/20'
-                          : 'text-slate-300 hover:bg-slate-800/60'
+                        selectedCategory === 'FAVORITES' ? 'bg-amber-500 text-slate-950 font-black' : 'text-slate-300 hover:bg-slate-800/60'
                       }`}
                     >
-                      <span className="flex items-center gap-2">⭐ <span>Mis Canales</span></span>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/30 font-bold">{currentTabFavorites.length}</span>
+                      <span>⭐ Mis Canales</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/30">{currentTabFavorites.length}</span>
                     </button>
-
                     <button
                       onClick={() => { setSelectedCategory('ALL'); setVisibleLimit(80); }}
                       className={`w-full text-left px-3.5 py-2.5 rounded-2xl text-xs font-bold transition flex items-center justify-between ${
-                        selectedCategory === 'ALL'
-                          ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-black shadow-lg shadow-violet-600/25 ring-1 ring-violet-400/40'
-                          : 'text-slate-300 hover:bg-slate-800/60'
+                        selectedCategory === 'ALL' ? 'bg-violet-600 text-white font-black' : 'text-slate-300 hover:bg-slate-800/60'
                       }`}
                     >
-                      <span className="flex items-center gap-2">🌐 <span>Todos los Canales</span></span>
+                      <span>🌐 Todos</span>
                       <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-black/30">{currentCatalog.length}</span>
                     </button>
-
-                    <div className="pt-2 pb-1 px-2 text-[9px] font-extrabold uppercase tracking-wider text-slate-500">
-                      Listado por Países
-                    </div>
-
-                    {currentCategories.map(cat => {
-                      const isCatActive = selectedCategory === String(cat.category_id);
-                      return (
-                        <button
-                          key={cat.category_id}
-                          onClick={() => { setSelectedCategory(String(cat.category_id)); setVisibleLimit(80); }}
-                          className={`w-full text-left px-3.5 py-2 rounded-2xl text-xs font-semibold transition truncate flex items-center justify-between ${
-                            isCatActive
-                              ? 'bg-violet-600 text-white font-bold shadow-md shadow-violet-600/30'
-                              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                          }`}
-                        >
-                          <span className="truncate">{cat.category_name}</span>
-                        </button>
-                      );
-                    })}
+                    {currentCategories.map(cat => (
+                      <button
+                        key={cat.category_id}
+                        onClick={() => { setSelectedCategory(String(cat.category_id)); setVisibleLimit(80); }}
+                        className={`w-full text-left px-3.5 py-2 rounded-2xl text-xs font-semibold transition truncate flex items-center justify-between ${
+                          selectedCategory === String(cat.category_id) ? 'bg-violet-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <span className="truncate">{cat.category_name}</span>
+                      </button>
+                    ))}
                   </div>
                 </aside>
 
-                {/* COLUMNA 2: GUÍA DE CANALES Y BUSCADOR */}
                 <section className="lg:col-span-4 bg-[#090C18] border border-slate-800/80 rounded-3xl p-3.5 flex flex-col h-[750px] shadow-2xl">
-                  <div className="relative mb-3">
+                  <div className="mb-3">
                     <input
                       type="text"
-                      placeholder="Buscar canal (ej: Mega, Chilevisión, Latina)..."
+                      placeholder="Buscar canal..."
                       value={search}
                       onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }}
-                      className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-950/80 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
+                      className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-violet-500"
                     />
-                    {search && (
-                      <button onClick={() => setSearch('')} className="absolute right-3 top-2.5 text-xs text-slate-500 hover:text-white">✕</button>
-                    )}
                   </div>
-
-                  <div className="flex items-center justify-between pb-2 px-1 text-[11px] text-slate-400 font-medium">
-                    <span>{selectedCategory === 'FAVORITES' ? 'Canales favoritos guardados:' : 'Canales en este grupo:'}</span>
-                    <strong className="text-violet-300 font-mono">{filteredItems.length}</strong>
-                  </div>
-
                   <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
-                    {visibleItems.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 text-xs font-medium">
-                        {selectedCategory === 'FAVORITES' ? 'No tienes canales en favoritos. Pulsa ☆ para agregarlos.' : 'No se encontraron canales en este grupo.'}
-                      </div>
-                    ) : (
-                      visibleItems.map((item, idx) => {
-                        const isFav = favorites.includes(item.id);
-                        const isSelected = activeItem?.id === item.id;
-                        const isFHD = item.title.toUpperCase().includes('FHD') || item.title.includes('1080');
-                        const isHD = item.title.toUpperCase().includes('HD');
-
-                        return (
-                          <div
-                            key={item.id}
-                            id={`item-${idx}`}
-                            onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
-                            className={`p-2.5 rounded-2xl cursor-pointer transition flex items-center justify-between gap-3 ${
-                              isSelected
-                                ? 'bg-gradient-to-r from-violet-600/30 via-indigo-600/20 to-transparent border border-violet-500/70 shadow-lg shadow-violet-600/15'
-                                : 'hover:bg-slate-800/40 border border-transparent'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <button
-                                type="button"
-                                onClick={(e) => toggleFavorite(item.id, e)}
-                                className="text-sm focus:outline-none shrink-0 hover:scale-125 transition"
-                                title={isFav ? 'Quitar de favoritos' : 'Agregar a favoritos'}
-                              >
-                                {isFav ? '⭐' : '☆'}
-                              </button>
-
-                              <div className="w-9 h-9 rounded-xl bg-slate-950 p-1 flex items-center justify-center shrink-0 border border-slate-800/80">
-                                {item.logo ? (
-                                  <img src={item.logo} alt="" className="w-full h-full object-contain" onError={e => { e.target.style.display = 'none'; }} />
-                                ) : (
-                                  <span className="text-[10px] font-black text-violet-400">TV</span>
-                                )}
-                              </div>
-
-                              <div className="min-w-0">
-                                <div className={`text-xs font-bold truncate ${isSelected ? 'text-white' : 'text-slate-300'}`}>
-                                  {item.title}
-                                </div>
-                                <div className="text-[10px] text-slate-500 truncate">
-                                  {item.categoryName}
-                                </div>
-                              </div>
+                    {visibleItems.map((item, idx) => {
+                      const isFav = favorites.includes(item.id);
+                      const isSelected = activeItem?.id === item.id;
+                      return (
+                        <div
+                          key={item.id}
+                          onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
+                          className={`p-2.5 rounded-2xl cursor-pointer transition flex items-center justify-between gap-3 ${
+                            isSelected ? 'bg-violet-600/30 border border-violet-500/70 shadow-lg text-white' : 'hover:bg-slate-800/40 text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <button onClick={(e) => toggleFavorite(item.id, e)} className="text-sm">
+                              {isFav ? '⭐' : '☆'}
+                            </button>
+                            <div className="w-8 h-8 rounded-xl bg-slate-950 p-1 flex items-center justify-center shrink-0 border border-slate-800">
+                              {item.logo ? <img src={item.logo} alt="" className="w-full h-full object-contain" onError={e => { e.target.style.display = 'none'; }} /> : <span className="text-[9px] font-black text-violet-400">TV</span>}
                             </div>
-
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span className={`px-1.5 py-0.5 rounded text-[8px] font-mono font-black ${
-                                isFHD ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' :
-                                isHD ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30' :
-                                'bg-slate-800 text-slate-400'
-                              }`}>
-                                {isFHD ? 'FHD' : isHD ? 'HD' : 'SD'}
-                              </span>
-                              {isSelected && (
-                                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                              )}
-                            </div>
+                            <div className="text-xs font-bold truncate">{item.title}</div>
                           </div>
-                        );
-                      })
-                    )}
-
-                    {visibleItems.length < filteredItems.length && (
-                      <button
-                        onClick={() => setVisibleLimit(prev => prev + 60)}
-                        className="w-full py-2.5 mt-2 rounded-2xl bg-slate-900 hover:bg-slate-800 text-xs font-bold text-violet-300 border border-slate-800 transition"
-                      >
-                        + Ver más canales...
-                      </button>
-                    )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
 
-                {/* COLUMNA 3: REPRODUCTOR CINEMÁTICO */}
                 <section className="lg:col-span-5 bg-[#090C18] border border-slate-800/80 rounded-3xl p-4 flex flex-col shadow-2xl">
-                  <div className="w-full">
-                    <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
-                  </div>
-
+                  <VideoPlayer item={activeItem} />
                   {activeItem && (
-                    <div className="mt-4 p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        {activeItem.logo && (
-                          <div className="w-12 h-12 rounded-xl bg-black p-1.5 border border-slate-800 shrink-0">
-                            <img src={activeItem.logo} alt="" className="w-full h-full object-contain" />
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-sm font-black text-white truncate">{activeItem.title}</h3>
-                            <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[9px] font-black uppercase">
-                              Al Aire
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-slate-400 mt-0.5 truncate">
-                            Categoría: <strong className="text-violet-300">{activeItem.categoryName}</strong>
-                          </div>
-                        </div>
+                    <div className="mt-4 p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 flex items-center justify-between">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-black text-white truncate">{activeItem.title}</h3>
+                        <p className="text-[11px] text-slate-400 truncate">{activeItem.categoryName}</p>
                       </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={(e) => toggleFavorite(activeItem.id, e)}
-                          className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-bold transition flex items-center gap-1.5"
-                        >
-                          {favorites.includes(activeItem.id) ? '⭐ Guardado' : '☆ Favorito'}
-                        </button>
-                      </div>
+                      <button onClick={(e) => toggleFavorite(activeItem.id, e)} className="px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold">
+                        {favorites.includes(activeItem.id) ? '⭐ Guardado' : '☆ Favorito'}
+                      </button>
                     </div>
                   )}
                 </section>
               </div>
             ) : (
-              /* ============================================================ */
-              /* CARTELERA DE CINE Y SERIES CON DRAWER DE CAPÍTULOS           */
-              /* ============================================================ */
+              /* CINE Y SERIES */
               <div className="space-y-6">
                 {activeItem && (activeItem.type === 'MOVIE' || activeItem.type === 'EPISODE') && (
-                  <div className="max-w-6xl mx-auto bg-[#090C18] border border-slate-800/80 rounded-3xl p-4 sm:p-6 space-y-4 shadow-2xl">
-                    <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-800/80">
-                      <button
-                        onClick={() => setActiveItem(null)}
-                        className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-bold border border-slate-800 flex items-center gap-2 transition"
-                      >
+                  <div className="max-w-6xl mx-auto bg-[#090C18] border border-slate-800/80 rounded-3xl p-5 space-y-4 shadow-2xl">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                      <button onClick={() => setActiveItem(null)} className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-bold text-slate-300">
                         ← Volver al Catálogo
                       </button>
-
-                      <div className="flex items-center gap-2">
-                        <a
-                          href={activeItem.streamUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="px-3.5 py-2 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 border border-violet-500/30 text-xs font-bold flex items-center gap-1.5 transition"
-                          title="Si el navegador muestra pantalla negra por códec H.265/MKV, reprodúcelo en VLC o reproductor de tu equipo"
-                        >
-                          🚀 Abrir en VLC / App Externa
-                        </a>
-                      </div>
+                      <a href={activeItem.streamUrl} target="_blank" rel="noreferrer" className="px-3.5 py-2 rounded-xl bg-violet-600/20 text-violet-300 border border-violet-500/30 text-xs font-bold">
+                        🚀 Abrir en VLC / App Externa
+                      </a>
                     </div>
-
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
                       <div className={seriesEpisodes.length > 0 ? "lg:col-span-8" : "lg:col-span-12"}>
-                        <VideoPlayer item={activeItem} username={username} password={password} serverHost={activeServerHost} />
-                        
-                        <div className="mt-2.5 p-3 rounded-2xl bg-slate-950/70 border border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
-                          <span>¿Escuchas el audio pero la pantalla queda en negro en PC?[cite: 42]</span>
-                          <span className="text-violet-300 font-medium">Este título usa códec HEVC/MKV. Usa el botón "Abrir en VLC" o reproduce desde Smart TV / TV Box.</span>
-                        </div>
+                        <VideoPlayer item={activeItem} />
                       </div>
-
                       {seriesEpisodes.length > 0 && (
-                        <div className="lg:col-span-4 bg-slate-950/80 border border-slate-800/80 rounded-2xl p-3 flex flex-col h-[460px]">
-                          <div className="pb-2 border-b border-slate-800 mb-2">
-                            <h4 className="text-xs font-black uppercase text-violet-400">
-                              Capítulos ({seriesEpisodes.length})
-                            </h4>
+                        <div className="lg:col-span-4 bg-slate-950/80 border border-slate-800 rounded-2xl p-3 flex flex-col h-[460px]">
+                          <div className="pb-2 border-b border-slate-800 mb-2 font-bold text-xs text-violet-400">
+                            Capítulos ({seriesEpisodes.length})
                           </div>
                           <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
                             {seriesEpisodes.map((ep, idx) => (
                               <button
                                 key={ep.id}
                                 onClick={() => setActiveItem(ep)}
-                                className={`w-full p-2.5 rounded-xl text-left text-xs font-semibold truncate transition flex items-center justify-between gap-2 ${
-                                  activeItem?.id === ep.id
-                                    ? 'bg-violet-600 text-white font-bold shadow-lg shadow-violet-600/30'
-                                    : 'bg-slate-900/60 hover:bg-slate-800 text-slate-300'
+                                className={`w-full p-2.5 rounded-xl text-left text-xs font-semibold truncate transition ${
+                                  activeItem?.id === ep.id ? 'bg-violet-600 text-white font-bold' : 'bg-slate-900/60 text-slate-300'
                                 }`}
                               >
-                                <span className="truncate">▶ {ep.title}</span>
-                                <span className="text-[10px] opacity-60 font-mono shrink-0">#{idx + 1}</span>
+                                ▶ {ep.title}
                               </button>
                             ))}
                           </div>
@@ -980,48 +596,38 @@
                   </div>
                 )}
 
-                {!activeItem && heroItem && (
-                  <div className="relative rounded-3xl overflow-hidden bg-gradient-to-r from-violet-950 via-slate-900 to-slate-950 border border-slate-800 p-6 sm:p-10 shadow-2xl flex flex-col md:flex-row items-center gap-8 min-h-[320px]">
-                    <div className="flex-1 space-y-3 z-10">
-                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-violet-600/30 border border-violet-500/40 text-[10px] font-extrabold uppercase text-violet-300">
-                        🔥 Título Destacado
+                {/* MODAL / DRAWER DE CAPÍTULOS SI SELECCIONÓ UNA SERIE PERO NO HA DADO PLAY */}
+                {!activeItem && selectedSerieInfo && seriesEpisodes.length > 0 && (
+                  <div className="max-w-4xl mx-auto bg-[#090C18] border border-violet-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                      <div>
+                        <h3 className="text-base font-black text-white">{selectedSerieInfo.title}</h3>
+                        <p className="text-xs text-slate-400">Selecciona el capítulo que deseas reproducir:</p>
                       </div>
-                      <h2 className="text-2xl sm:text-4xl font-black text-white tracking-tight">{heroItem.title}</h2>
-                      <p className="text-xs sm:text-sm text-slate-300 max-w-xl line-clamp-3 leading-relaxed">
-                        Acceso ilimitado con audio y calidad original en Full Premium TvGo.
-                      </p>
-                      <div className="flex items-center gap-3 pt-2">
-                        <button
-                          onClick={() => handleSelectItem(heroItem)}
-                          className="px-6 py-3 rounded-2xl bg-white text-slate-950 font-black text-xs hover:bg-slate-200 shadow-xl transition flex items-center gap-2 active:scale-95"
-                        >
-                          <span>▶</span> Ver Ahora
-                        </button>
-                        <button
-                          onClick={(e) => toggleFavorite(heroItem.id, e)}
-                          className="px-5 py-3 rounded-2xl bg-slate-900/80 hover:bg-slate-800 border border-slate-700 text-white font-bold text-xs transition"
-                        >
-                          {favorites.includes(heroItem.id) ? '⭐ En Mi Lista' : '+ Guardar'}
-                        </button>
-                      </div>
+                      <button onClick={() => setSelectedSerieInfo(null)} className="px-3 py-1.5 rounded-xl bg-slate-800 text-xs font-bold text-slate-300">
+                        ✕ Cerrar
+                      </button>
                     </div>
-                    {heroItem.logo && (
-                      <div className="w-44 sm:w-56 aspect-[2/3] rounded-2xl overflow-hidden shadow-2xl border border-white/10 shrink-0">
-                        <img src={heroItem.logo} alt="" className="w-full h-full object-cover" />
-                      </div>
-                    )}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 max-h-96 overflow-y-auto pr-1">
+                      {seriesEpisodes.map((ep, idx) => (
+                        <button
+                          key={ep.id}
+                          onClick={() => setActiveItem(ep)}
+                          className="p-3 rounded-2xl bg-slate-900/90 hover:bg-violet-600/30 border border-slate-800 hover:border-violet-500/60 text-left text-xs font-semibold text-slate-200 transition truncate"
+                        >
+                          ▶ {ep.title}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
 
-                {/* SELECTOR DE GÉNEROS Y BUSCADOR */}
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs no-scrollbar">
                     <button
                       onClick={() => { setSelectedCategory('FAVORITES'); setVisibleLimit(80); }}
                       className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition ${
-                        selectedCategory === 'FAVORITES'
-                          ? 'bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/20'
-                          : 'bg-slate-900 text-slate-300 border border-slate-800'
+                        selectedCategory === 'FAVORITES' ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-900 text-slate-300 border border-slate-800'
                       }`}
                     >
                       ⭐ Mi Lista ({currentTabFavorites.length})
@@ -1029,9 +635,7 @@
                     <button
                       onClick={() => { setSelectedCategory('ALL'); setVisibleLimit(80); }}
                       className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition ${
-                        selectedCategory === 'ALL'
-                          ? 'bg-violet-600 text-white font-bold'
-                          : 'bg-slate-900 text-slate-300 border border-slate-800'
+                        selectedCategory === 'ALL' ? 'bg-violet-600 text-white font-bold' : 'bg-slate-900 text-slate-300 border border-slate-800'
                       }`}
                     >
                       Todos ({currentCatalog.length})
@@ -1041,9 +645,7 @@
                         key={cat.category_id}
                         onClick={() => { setSelectedCategory(String(cat.category_id)); setVisibleLimit(80); }}
                         className={`px-3.5 py-2 rounded-xl font-bold whitespace-nowrap transition ${
-                          selectedCategory === String(cat.category_id)
-                            ? 'bg-violet-600 text-white font-bold'
-                            : 'bg-slate-900 text-slate-300 border border-slate-800'
+                          selectedCategory === String(cat.category_id) ? 'bg-violet-600 text-white font-bold' : 'bg-slate-900 text-slate-300 border border-slate-800'
                         }`}
                       >
                         {cat.category_name}
@@ -1051,116 +653,43 @@
                     ))}
                   </div>
 
-                  <div className="w-full sm:w-72">
-                    <input
-                      type="text"
-                      placeholder="Buscar por título..."
-                      value={search}
-                      onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }}
-                      className="w-full px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    placeholder="Buscar por título..."
+                    value={search}
+                    onChange={e => { setSearch(e.target.value); setVisibleLimit(80); }}
+                    className="w-full sm:w-72 px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white"
+                  />
                 </div>
 
-                {/* GRILLA DE PÓSTERS */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
-                  {visibleItems.length === 0 ? (
-                    <div className="col-span-full p-12 text-center text-slate-500 text-xs font-semibold">
-                      {selectedCategory === 'FAVORITES'
-                        ? 'Aún no tienes títulos en Mi Lista. Pulsa ☆ en cualquier película o serie para guardarla.'
-                        : 'No se encontraron resultados.'}
-                    </div>
-                  ) : (
-                    visibleItems.map((item) => {
-                      const isFav = favorites.includes(item.id);
-                      return (
-                        <div
-                          key={item.id}
-                          onClick={() => handleSelectItem(item)}
-                          className="group relative rounded-2xl overflow-hidden cursor-pointer border border-slate-800/80 bg-slate-900 transition-all transform hover:-translate-y-1.5 hover:shadow-2xl hover:border-violet-500/80"
-                        >
-                          <div className="aspect-[2/3] w-full bg-slate-950 overflow-hidden relative">
-                            {item.logo ? (
-                              <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" loading="lazy" onError={e => { e.target.style.display = 'none'; }} />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-slate-700">🎬</div>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={(e) => toggleFavorite(item.id, e)}
-                              className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/70 backdrop-blur-md flex items-center justify-center text-xs shadow-lg hover:scale-110 transition"
-                            >
-                              {isFav ? '⭐' : '☆'}
-                            </button>
-
-                            <div className="absolute inset-0 bg-gradient-to-t from-[#060811] via-transparent to-transparent flex flex-col justify-end p-2.5">
-                              <div className="text-xs font-bold text-white line-clamp-2 leading-snug">{item.title}</div>
-                              <div className="text-[10px] text-violet-300 font-medium truncate mt-0.5">{item.categoryName}</div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-
-                {visibleItems.length < filteredItems.length && (
-                  <div className="text-center pt-4">
-                    <button
-                      onClick={() => setVisibleLimit(prev => prev + 60)}
-                      className="px-8 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-violet-300 font-bold text-xs border border-slate-800 shadow-xl transition"
+                  {visibleItems.map(item => (
+                    <div
+                      key={item.id}
+                      onClick={() => handleSelectItem(item)}
+                      className="group relative rounded-2xl overflow-hidden cursor-pointer border border-slate-800/80 bg-slate-900 transition hover:-translate-y-1.5 hover:shadow-2xl hover:border-violet-500/80"
                     >
-                      Cargar más títulos...
-                    </button>
-                  </div>
-                )}
+                      <div className="aspect-[2/3] w-full bg-slate-950 overflow-hidden relative">
+                        {item.logo ? <img src={item.logo} alt={item.title} className="w-full h-full object-cover group-hover:scale-105 transition" loading="lazy" onError={e => { e.target.style.display = 'none'; }} /> : <div className="w-full h-full flex items-center justify-center text-3xl font-bold text-slate-700">🎬</div>}
+                        <button onClick={(e) => toggleFavorite(item.id, e)} className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/70 flex items-center justify-center text-xs shadow-lg">
+                          {favorites.includes(item.id) ? '⭐' : '☆'}
+                        </button>
+                        <div className="absolute inset-0 bg-gradient-to-t from-[#060811] via-transparent to-transparent flex flex-col justify-end p-2.5">
+                          <div className="text-xs font-bold text-white line-clamp-2">{item.title}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </main>
 
           {/* MODALES */}
-          {paymentSuccessModal && (
-            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-              <div className="bg-[#0A0D1A] border border-emerald-500/50 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
-                <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-3xl mx-auto">🎉</div>
-                <h3 className="text-xl font-black text-white">¡Pago Acreditado!</h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Tu suscripción anual ha sido activada en este dispositivo por <strong className="text-emerald-400">365 días</strong>.
-                </p>
-                <button
-                  onClick={() => { setPaymentSuccessModal(false); syncDeviceWithServer(); }}
-                  className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-lg transition"
-                >
-                  Continuar
-                </button>
-              </div>
-            </div>
-          )}
-
-          {paymentFailureModal && (
-            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-              <div className="bg-[#0A0D1A] border border-amber-500/50 rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
-                <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-3xl mx-auto">⚠️</div>
-                <h3 className="text-xl font-black text-white">Pago no completado</h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  El proceso de pago fue cancelado o no se acreditó. Si necesitas ayuda podemos asistirte por WhatsApp.
-                </p>
-                <div className="flex gap-2">
-                  <button onClick={() => setPaymentFailureModal(false)} className="flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-200 font-bold text-xs">Cerrar</button>
-                  <button onClick={() => { setPaymentFailureModal(false); setShowLicenseModal(true); }} className="flex-1 py-2.5 rounded-xl bg-violet-600 text-white font-bold text-xs">Reintentar</button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {showLicenseModal && (
             <LicenseModal
               deviceId={deviceId}
               pricing={pricing}
-              exchange={exchange}
-              selectedCurrency={selectedCurrency}
-              setSelectedCurrency={setSelectedCurrency}
               onClose={() => setShowLicenseModal(false)}
               onActivated={(newAccess) => { setDeviceAccess(newAccess); setShowLicenseModal(false); }}
             />
@@ -1171,38 +700,13 @@
       );
     }
 
-    function LicenseModal({ deviceId, pricing, exchange, selectedCurrency, setSelectedCurrency, onClose, onActivated }) {
+    function LicenseModal({ deviceId, pricing, onClose, onActivated }) {
       const [licenseInput, setLicenseInput] = useState('');
       const [activating, setActivating] = useState(false);
-      const [payingOnline, setPayingOnline] = useState(false);
-      const [feedback, setFeedback] = useState('');
-
-      const handlePayWithMercadoPago = async (tierToPay) => {
-        setPayingOnline(true);
-        setFeedback('');
-        try {
-          const res = await fetch('/api/payment/create-preference', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId, tier: tierToPay })
-          });
-          const data = await res.json();
-          if (data.init_point) {
-            window.location.href = data.init_point;
-          } else {
-            throw new Error(data.error || 'No se pudo generar el pago');
-          }
-        } catch (err) {
-          setFeedback(err.message);
-        } finally {
-          setPayingOnline(false);
-        }
-      };
 
       const handleActivate = async (e) => {
         e.preventDefault();
         setActivating(true);
-        setFeedback('');
         try {
           const res = await fetch('/api/license/activate', {
             method: 'POST',
@@ -1214,7 +718,7 @@
           alert(data.message);
           onActivated(data.access);
         } catch (err) {
-          setFeedback(err.message);
+          alert(err.message);
         } finally {
           setActivating(false);
         }
@@ -1222,69 +726,23 @@
 
       return (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#0A0D1A] border border-slate-800 rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto">
+          <div className="bg-[#0A0D1A] border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div>
-                <h3 className="text-lg font-black text-white">Activar Licencia Anual (365 Días)</h3>
-                <p className="text-xs text-slate-400">ID Dispositivo: <strong className="text-violet-300 font-mono">{deviceId}</strong></p>
-              </div>
-              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700">✕ Cerrar</button>
+              <h3 className="text-lg font-black text-white">Activar Licencia (365 Días)</h3>
+              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold">✕</button>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="p-4 rounded-2xl bg-violet-950/40 border border-violet-500/40 space-y-3 flex flex-col justify-between">
-                <div>
-                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-violet-600 text-white">Cliente Oficial</span>
-                  <div className="text-2xl font-black text-white pt-2">${pricing.priceOfficialCLP.toLocaleString('es-CL')} <span className="text-xs font-normal text-slate-400">CLP / Año</span></div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handlePayWithMercadoPago('OFFICIAL')}
-                  disabled={payingOnline}
-                  className="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 text-white font-black text-xs shadow-lg transition"
-                >
-                  💳 Pagar $4.000 CLP
-                </button>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-700 space-y-3 flex flex-col justify-between">
-                <div>
-                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">Lista Propia</span>
-                  <div className="text-2xl font-black text-white pt-2">${pricing.priceExternalCLP.toLocaleString('es-CL')} <span className="text-xs font-normal text-slate-400">CLP / Año</span></div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handlePayWithMercadoPago('EXTERNAL')}
-                  disabled={payingOnline}
-                  className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 text-white font-black text-xs shadow-lg transition"
-                >
-                  💳 Pagar $6.000 CLP
-                </button>
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
-              <div className="text-xs font-bold text-sky-400">⚡ Pasarela Segura Mercado Pago Chile</div>
-              <div className="text-[11px] text-slate-300">Paga con <strong>CuentaRUT</strong>, <strong>Webpay Plus</strong>, Débito o Crédito.</div>
-            </div>
-
-            {feedback && <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs text-center">{feedback}</div>}
-
-            <form onSubmit={handleActivate} className="space-y-2 pt-3 border-t border-slate-800">
-              <label className="block text-xs font-bold text-slate-300">¿Tienes un código de activación?</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Ej: FP4K-XXXX-XXXX"
-                  value={licenseInput}
-                  onChange={e => setLicenseInput(e.target.value)}
-                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white"
-                  required
-                />
-                <button type="submit" disabled={activating} className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700">
-                  {activating ? 'Validando...' : 'Canjear'}
-                </button>
-              </div>
+            <form onSubmit={handleActivate} className="space-y-3">
+              <input
+                type="text"
+                placeholder="Código de Activación..."
+                value={licenseInput}
+                onChange={e => setLicenseInput(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono uppercase text-white"
+                required
+              />
+              <button type="submit" disabled={activating} className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs">
+                {activating ? 'Validando...' : 'Canjear Código'}
+              </button>
             </form>
           </div>
         </div>
@@ -1292,125 +750,53 @@
     }
 
     function PlatformsModal({ deferredPwaPrompt, onClose }) {
-      const handleInstallPwa = async () => {
-        if (deferredPwaPrompt) {
-          deferredPwaPrompt.prompt();
-          await deferredPwaPrompt.userChoice;
-        } else {
-          alert('Para instalar la WebApp: En Chrome/Edge pulsa el menú (⋮) y elige "Instalar aplicación".');
-        }
-      };
-
       return (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#0A0D1A] border border-slate-800 rounded-3xl max-w-xl w-full p-6 shadow-2xl space-y-4 text-xs">
+          <div className="bg-[#0A0D1A] border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-lg font-black text-white">📲 Instalar Full Premium TvGo</h3>
-              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold hover:bg-slate-700">✕</button>
+              <h3 className="text-lg font-black text-white">Instalar en TV Box (Downloader)</h3>
+              <button onClick={onClose} className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 font-bold">✕</button>
             </div>
-
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-orange-600/20 via-amber-600/20 to-violet-600/20 border border-orange-500/40 space-y-2">
-              <div className="font-extrabold text-orange-300 text-sm">📺 Instalación en TV Box / Android TV (Downloader)</div>
-              <p className="text-slate-300 text-xs">Abre la app <strong>Downloader</strong> en tu televisor e ingresa este código:</p>
-              <div className="p-3 bg-slate-950 rounded-xl border border-orange-500/30 text-center">
-                <div className="text-2xl font-mono font-black text-orange-400 tracking-wider">2336838</div>
-              </div>
+            <div className="p-4 rounded-2xl bg-orange-600/20 border border-orange-500/40 text-center space-y-1">
+              <p className="text-slate-300 text-xs">Código para la aplicación Downloader:</p>
+              <div className="text-2xl font-mono font-black text-orange-400">2336838</div>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 flex flex-col justify-between">
-                <div>
-                  <div className="font-bold text-white text-sm">📱 Android APK Directo</div>
-                  <p className="text-slate-400 mt-1">Descarga directa para celulares o tablets Android.</p>
-                </div>
-                <a href="/app.apk" download="FullPremiumTvGo.apk" className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-center block shadow">
-                  📥 Descargar APK
-                </a>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 flex flex-col justify-between">
-                <div>
-                  <div className="font-bold text-white text-sm">💻 PC / WebApp (PWA)</div>
-                  <p className="text-slate-400 mt-1">Instalación liviana en tu navegador sin descargas.</p>
-                </div>
-                <button onClick={handleInstallPwa} className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow">
-                  ⚡ Instalar en este Equipo
-                </button>
-              </div>
-            </div>
+            <a href="/app.apk" download className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-center block">
+              📥 Descargar APK Directo
+            </a>
           </div>
         </div>
       );
     }
 
-    function VideoPlayer({ item, username, password, serverHost }) {
+    // REPRODUCTOR CON LIMPIEZA TOTAL DE CONEXIONES AL DESMONTAR
+    function VideoPlayer({ item }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
-
       const [status, setStatus] = useState('IDLE');
-      const [isMutedByPolicy, setIsMutedByPolicy] = useState(false);
-      const [audioTracks, setAudioTracks] = useState([
-        { index: 0, label: 'Pista 1 — Principal' },
-        { index: 1, label: 'Pista 2 — Secundario' }
-      ]);
-      const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
-      const [subtitleTracks, setSubtitleTracks] = useState([]);
-      const [activeSubtitle, setActiveSubtitle] = useState('OFF');
 
-      useEffect(() => {
-        setSelectedAudioTrack(0);
-        setSubtitleTracks([]);
-        setActiveSubtitle('OFF');
-        setIsMutedByPolicy(false);
-
-        if (item?.type === 'MOVIE' && item?.streamId && serverHost) {
-          const vodInfoUrl = `${serverHost}/player_api.php?username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password.trim())}&action=get_vod_info&vod_id=${item.streamId}`;
-          fetch(`/proxy?url=${encodeURIComponent(vodInfoUrl)}`)
-            .then(r => r.json())
-            .then(data => {
-              const subs = data?.info?.subtitles || [];
-              if (Array.isArray(subs) && subs.length > 0) {
-                setSubtitleTracks(subs.map((s, idx) => ({
-                  id: `sub-${idx}`,
-                  label: s.language || s.name || `Subtítulo ${idx + 1}`,
-                  url: `/proxy?url=${encodeURIComponent(s.url || s.file)}`
-                })));
-              }
-            })
-            .catch(() => {});
+      const cleanupConnections = () => {
+        if (playerRef.current) {
+          try { playerRef.current.destroy(); } catch (_) {}
+          playerRef.current = null;
         }
-      }, [item]);
-
-      const executePlaySafe = async (videoElement, playerInstance) => {
-        try {
-          videoElement.muted = false;
-          videoElement.volume = 1.0;
-          if (playerInstance) await playerInstance.play();
-          else await videoElement.play();
-          setIsMutedByPolicy(false);
-          setStatus('PLAYING');
-        } catch (err) {
-          videoElement.muted = true;
-          setIsMutedByPolicy(true);
+        if (videoRef.current) {
           try {
-            if (playerInstance) await playerInstance.play();
-            else await videoElement.play();
-            setStatus('PLAYING');
-          } catch (_) {
-            setStatus('PLAYING');
-          }
+            videoRef.current.pause();
+            videoRef.current.removeAttribute('src');
+            videoRef.current.load();
+          } catch (_) {}
         }
       };
 
       const startPlayback = () => {
         if (!item?.streamUrl || !videoRef.current) return;
+        cleanupConnections();
         setStatus('LOADING');
-        const video = videoRef.current;
 
-        if (playerRef.current) {
-          try { playerRef.current.destroy(); } catch (_) {}
-          playerRef.current = null;
-        }
+        const video = videoRef.current;
+        video.muted = false;
+        video.volume = 1.0;
 
         const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
 
@@ -1427,20 +813,16 @@
                 lazyLoad: false,
                 enableStashBuffer: false,
                 liveBufferLatencyChasing: false,
-                autoCleanupSourceBuffer: true,
-                autoCleanupMaxBackwardDuration: 25,
-                autoCleanupMinBackwardDuration: 10
+                autoCleanupSourceBuffer: true
               });
 
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
-
-              executePlaySafe(video, player);
-
-              player.on(window.mpegts.Events.ERROR, () => {
-                if (video.currentTime > 0) return;
-                setStatus('ERROR');
+              player.play().then(() => setStatus('PLAYING')).catch(() => {
+                video.muted = true;
+                player.play().catch(() => {});
+                setStatus('PLAYING');
               });
             } catch (_) {
               setStatus('ERROR');
@@ -1448,111 +830,30 @@
           } else {
             video.src = directProxyUrl;
             video.load();
-            executePlaySafe(video, null);
+            video.play().catch(() => {});
           }
         } else {
           video.src = directProxyUrl;
           video.load();
-          executePlaySafe(video, null).then(() => {
-            if (video.audioTracks && video.audioTracks.length > 1) {
-              const detected = [];
-              for (let i = 0; i < video.audioTracks.length; i++) {
-                const t = video.audioTracks[i];
-                detected.push({ index: i, label: `Pista ${i + 1} — ${t.label || t.language || (i === 0 ? 'Español' : 'Inglés')}` });
-              }
-              setAudioTracks(detected);
-            }
-          }).catch(() => setStatus('ERROR'));
+          video.play().then(() => setStatus('PLAYING')).catch(() => setStatus('PLAYING'));
         }
       };
-
-      useEffect(() => {
-        const video = videoRef.current;
-        if (!video) return;
-
-        const handleTimeUpdate = () => {
-          if (video.currentTime > 0 && status === 'LOADING') setStatus('PLAYING');
-        };
-
-        const handleCanPlay = () => {
-          if (video.paused) video.play().catch(() => {});
-          if (video.buffered && video.buffered.length > 0) {
-            const bStart = video.buffered.start(0);
-            if (video.currentTime < bStart) video.currentTime = bStart + 0.05;
-          }
-        };
-
-        video.addEventListener('timeupdate', handleTimeUpdate);
-        video.addEventListener('playing', () => setStatus('PLAYING'));
-        video.addEventListener('canplay', handleCanPlay);
-
-        return () => {
-          video.removeEventListener('timeupdate', handleTimeUpdate);
-          video.removeEventListener('canplay', handleCanPlay);
-        };
-      }, [status]);
 
       useEffect(() => {
         startPlayback();
         return () => {
-          if (playerRef.current) {
-            try { playerRef.current.destroy(); } catch (_) {}
-            playerRef.current = null;
-          }
+          cleanupConnections(); // Libera el stream al cambiar de video o cerrar
         };
-      }, [item, selectedAudioTrack]);
-
-      const handleUnmuteClick = () => {
-        if (videoRef.current) {
-          videoRef.current.muted = false;
-          videoRef.current.volume = 1.0;
-          videoRef.current.play().catch(() => {});
-          setIsMutedByPolicy(false);
-        }
-      };
+      }, [item]);
 
       return (
         <div className="bg-black rounded-3xl overflow-hidden shadow-2xl relative border border-slate-800/90 w-full flex flex-col justify-center">
           <div className="relative aspect-video bg-black flex items-center justify-center">
-            <video
-              ref={videoRef}
-              controls
-              playsInline
-              autoPlay
-              crossOrigin="anonymous"
-              className="w-full h-full object-contain cursor-pointer"
-              onClick={handleUnmuteClick}
-            >
-              {subtitleTracks.map(sub => (
-                <track key={sub.id} kind="subtitles" label={sub.label} src={sub.url} default={activeSubtitle === sub.label} />
-              ))}
-            </video>
-
-            {isMutedByPolicy && (
-              <div
-                onClick={handleUnmuteClick}
-                className="absolute top-4 right-4 z-20 px-3.5 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-black text-xs shadow-2xl cursor-pointer hover:bg-amber-400 transition flex items-center gap-1.5 animate-bounce"
-              >
-                <span>🔊 Activar Audio</span>
-              </div>
-            )}
-
+            <video ref={videoRef} controls playsInline autoPlay crossOrigin="anonymous" className="w-full h-full object-contain" />
             {status === 'LOADING' && (
-              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center pointer-events-none">
                 <div className="w-10 h-10 border-3 border-violet-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-                <span className="text-xs text-violet-300 font-bold tracking-wide">Sintonizando transmisión...</span>
-              </div>
-            )}
-
-            {status === 'ERROR' && (
-              <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 text-center space-y-3 z-10">
-                <p className="text-amber-400 font-bold text-sm">Señal temporalmente no disponible</p>
-                <button
-                  onClick={() => startPlayback()}
-                  className="px-5 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black shadow-xl"
-                >
-                  🔄 Reconectar Canal
-                </button>
+                <span className="text-xs text-violet-300 font-bold">Cargando transmisión...</span>
               </div>
             )}
           </div>

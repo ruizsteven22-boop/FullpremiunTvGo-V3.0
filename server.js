@@ -46,7 +46,7 @@ async function sendActivationEmail(toEmail, deviceId, paymentId, tier) {
     html: `
       <div style="font-family: Arial, sans-serif; background-color: #0B0F19; color: #ffffff; padding: 25px; border-radius: 12px; max-width: 550px; margin: auto;">
         <h2 style="color: #8b5cf6; margin-top: 0;">¡Tu Suscripción Anual está Activa! 🎉</h2>
-        <p style="font-size: 14px; color: #cbd5e1;">Tu pago ha sido procesado y acreditado con éxito a través de Mercado Pago Chile.</p>
+        <p style="font-size: 14px; color: #cbd5e1;">Tu pago ha sido procesado con éxito a través de Mercado Pago Chile.</p>
         <div style="background-color: #1e293b; padding: 15px; border-radius: 8px; margin: 20px 0;">
           <p style="margin: 5px 0; font-size: 13px;"><strong>ID de Dispositivo:</strong> <code style="color: #a78bfa;">${deviceId}</code></p>
           <p style="margin: 5px 0; font-size: 13px;"><strong>N° de Comprobante:</strong> MP-${paymentId}</p>
@@ -54,11 +54,11 @@ async function sendActivationEmail(toEmail, deviceId, paymentId, tier) {
           <p style="margin: 5px 0; font-size: 13px;"><strong>Plan:</strong> ${tier === 'OFFICIAL' ? 'Cliente Oficial' : 'Lista Propia'} (${price})</p>
         </div>
         <p style="font-size: 12px; color: #94a3b8;">
-          Ya puedes disfrutar de toda la programación sin interrupciones. Para instalar la app en televisores Smart TV o TV Box mediante Downloader, ingresa el código <strong>2336838</strong>.
+          Para instalar la app en televisores Smart TV o TV Box mediante Downloader, ingresa el código <strong>2336838</strong>.
         </p>
         <hr style="border: none; border-top: 1px solid #334155; margin: 20px 0;" />
         <p style="font-size: 11px; color: #64748b; text-align: center;">
-          Soporte oficial por WhatsApp: +56979429123 | activaciones@app.fullpremiumtvcl.com
+          Soporte oficial WhatsApp: +56979429123 | activaciones@app.fullpremiumtvcl.com
         </p>
       </div>
     `
@@ -136,7 +136,7 @@ function computeAccess(device, settings) {
     return { allowed: true, status: 'TRIAL', daysLeft, trialEndsAt };
   }
 
-  return { allowed: false, status: 'EXPIRED_TRIAL', daysLeft: 0, reason: 'Periodo de prueba de 12 días finalizado.' };
+  return { allowed: false, status: 'EXPIRED_TRIAL', daysLeft: 0, reason: 'Periodo de prueba finalizado.' };
 }
 
 function parseJsonBody(req) {
@@ -228,9 +228,7 @@ const server = http.createServer(async (req, res) => {
       const payload = await parseJsonBody(req);
       const deviceId = (payload.deviceId || '').trim();
 
-      if (!deviceId) {
-        return sendJson(res, 400, { error: 'deviceId es requerido' });
-      }
+      if (!deviceId) return sendJson(res, 400, { error: 'deviceId requerido' });
 
       const db = loadDb();
       let device = db.devices[deviceId];
@@ -282,7 +280,7 @@ const server = http.createServer(async (req, res) => {
       const deviceId = (payload.deviceId || '').trim();
       const tier = payload.tier === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL';
 
-      if (!deviceId) return sendJson(res, 400, { error: 'deviceId es requerido' });
+      if (!deviceId) return sendJson(res, 400, { error: 'deviceId requerido' });
 
       const db = loadDb();
       const unitPrice = tier === 'OFFICIAL' ? db.settings.priceOfficialCLP : db.settings.priceExternalCLP;
@@ -322,7 +320,7 @@ const server = http.createServer(async (req, res) => {
           publicKey: MP_PUBLIC_KEY
         });
       } else {
-        return sendJson(res, 500, { error: 'Error al comunicarse con Mercado Pago', details: mpResponse.body });
+        return sendJson(res, 500, { error: 'Error en pasarela Mercado Pago', details: mpResponse.body });
       }
     } catch (err) {
       return sendJson(res, 500, { error: err.message });
@@ -453,7 +451,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // ENDPOINT: ENVIAR MENSAJE A USUARIOS
   if (pathname === '/api/admin/send-message' && req.method === 'POST') {
     const adminKey = req.headers['x-admin-key'];
     if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
@@ -546,7 +543,9 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 6. PROXY DE STREAMING
+  // --------------------------------------------------------------------------
+  // 6. PROXY DE STREAMING RESILIENTE CON DESTRUCCIÓN INMEDIATA DE SOCKETS
+  // --------------------------------------------------------------------------
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
     if (!targetUrl) {
@@ -554,6 +553,16 @@ const server = http.createServer(async (req, res) => {
       res.end('Falta parámetro url');
       return;
     }
+
+    let activeProxyReq = null;
+
+    // Si el usuario cambia de canal, cierra la pestaña o pausa: CORTAR INMEDIATAMENTE
+    req.on('close', () => {
+      if (activeProxyReq) {
+        activeProxyReq.destroy();
+        activeProxyReq = null;
+      }
+    });
 
     const proxyStream = (currentUrl, redirectCount = 0) => {
       if (redirectCount > 5) {
@@ -570,7 +579,7 @@ const server = http.createServer(async (req, res) => {
           method: req.method,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Connection': 'keep-alive',
+            'Connection': 'close', // Evita mantener sockets colgados en el panel IPTV
             ...(req.headers.range ? { 'Range': req.headers.range } : {})
           }
         }, (proxyRes) => {
@@ -601,6 +610,8 @@ const server = http.createServer(async (req, res) => {
           proxyRes.pipe(res);
         });
 
+        activeProxyReq = proxyReq;
+
         proxyReq.on('error', (err) => {
           if (!res.headersSent) {
             res.writeHead(502, { 'Content-Type': 'text/plain' });
@@ -612,7 +623,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Error de proxy: ' + err.message);
+          res.end('Error interno: ' + err.message);
         }
       }
     };
@@ -621,7 +632,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 7. ARCHIVOS ESTÁTICOS Y APK
+  // 7. ARCHIVOS ESTÁTICOS
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
 
   fs.stat(filePath, (err, stats) => {

@@ -9,9 +9,6 @@ try {
   nodemailer = require('nodemailer');
 } catch (_) {}
 
-// ==========================================
-// CONFIGURACIÓN Y CREDENCIALES
-// ==========================================
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'FullPremium2026*';
 
@@ -199,9 +196,6 @@ function callMercadoPago(apiPath, method = 'GET', data = null) {
   });
 }
 
-// ==========================================
-// SERVIDOR HTTP PRINCIPAL
-// ==========================================
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
@@ -216,7 +210,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. INICIALIZACIÓN DE DISPOSITIVO (PIN FIJO Y PERMANENTE)
+  // 1. INICIALIZACIÓN DE LA PANTALLA (PIN FIJO PERMANENTE)
   if (pathname === '/api/device/init' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -229,7 +223,6 @@ const server = http.createServer(async (req, res) => {
       const now = Date.now();
 
       if (!device) {
-        // Generar PIN único permanente de 4 dígitos
         const permanentPin = Math.floor(1000 + Math.random() * 9000).toString();
         device = {
           deviceId,
@@ -250,12 +243,9 @@ const server = http.createServer(async (req, res) => {
         db.devices[deviceId] = device;
       } else {
         device.lastSeenAt = now;
-        // Si por alguna razón no tenía PIN asignado previamente, fijar uno permanente
         if (!device.devicePin) {
           device.devicePin = Math.floor(1000 + Math.random() * 9000).toString();
         }
-        if (payload.clientType) device.clientType = payload.clientType;
-        if (payload.deviceModel) device.deviceModel = payload.deviceModel;
       }
 
       saveDb(db);
@@ -263,7 +253,7 @@ const server = http.createServer(async (req, res) => {
 
       return sendJson(res, 200, {
         deviceId: device.deviceId,
-        devicePin: device.devicePin, // SIEMPRE EL PIN FIJO
+        devicePin: device.devicePin,
         deviceModel: device.deviceModel,
         playlist: device.playlist || null,
         access,
@@ -279,7 +269,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 2. CONSULTAR CONFIGURACIÓN REMOTA DESDE LA TV
+  // 2. CONSULTAR CONFIGURACIÓN REMOTA (POLLING DESDE LA TV)
   if (pathname === '/api/device/config' && req.method === 'GET') {
     const deviceId = (parsedUrl.query.deviceId || '').trim();
     if (!deviceId) return sendJson(res, 400, { error: 'deviceId es requerido' });
@@ -298,15 +288,15 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // 3. PORTAL CLIENTE / RESELLER: LOGIN UNIFICADO
+  // 3. LOGIN UNIFICADO (DETECTA SI ES CLIENTE O ADMINISTRADOR)
   if (pathname === '/api/client/login' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
-      const deviceId = (payload.deviceId || '').trim();
-      const pin = (payload.devicePin || '').trim();
+      const inputId = (payload.deviceId || '').trim();
+      const inputPass = (payload.devicePin || '').trim();
 
-      // MODO ADMINISTRADOR RESELLER (CON CONTRASEÑA MAESTRA)
-      if (pin === ADMIN_PASSWORD || deviceId === 'ADMIN') {
+      // Acceso como Administrador / Reseller Maestro
+      if (inputPass === ADMIN_PASSWORD || inputId === 'ADMIN') {
         const db = loadDb();
         const deviceList = Object.values(db.devices).map(dev => ({
           ...dev,
@@ -321,15 +311,15 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      // MODO CLIENTE INDIVIDUAL (DEVICE ID + PIN FIJO)
+      // Acceso como Cliente Individual (ID + PIN)
       const db = loadDb();
-      const device = db.devices[deviceId];
+      const device = db.devices[inputId];
 
       if (!device) {
-        return sendJson(res, 404, { error: 'El ID de dispositivo no existe. Abre la aplicación en tu pantalla primero.' });
+        return sendJson(res, 404, { error: 'El ID de dispositivo no existe. Inicia la app en tu TV primero.' });
       }
 
-      if (device.devicePin !== pin) {
+      if (device.devicePin !== inputPass) {
         return sendJson(res, 401, { error: 'Clave PIN incorrecta. Revisa el código fijo en tu pantalla.' });
       }
 
@@ -351,11 +341,11 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 4. GUARDAR / ASIGNAR LISTA REMOTA
+  // 4. GUARDAR O ASIGNAR LISTA REMOTAMENTE
   if (pathname === '/api/client/save-playlist' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
-      const deviceId = (payload.deviceId || '').trim();
+      const targetId = (payload.deviceId || '').trim();
       const pin = (payload.devicePin || '').trim();
       const adminKey = req.headers['x-admin-key'];
       const playlist = payload.playlist;
@@ -363,11 +353,10 @@ const server = http.createServer(async (req, res) => {
       const deviceModel = (payload.deviceModel || '').trim();
 
       const db = loadDb();
-      const device = db.devices[deviceId];
+      const device = db.devices[targetId];
 
       if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
 
-      // Validar si es cliente (PIN) o admin (Master Key)
       if (adminKey !== ADMIN_PASSWORD && device.devicePin !== pin) {
         return sendJson(res, 401, { error: 'No autorizado' });
       }
@@ -382,10 +371,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       saveDb(db);
-
       return sendJson(res, 200, {
         ok: true,
-        message: '¡Lista guardada con éxito! Tu televisor se sincronizará automáticamente.',
+        message: '¡Lista guardada con éxito! Tu pantalla se sincronizará automáticamente.',
         playlist: device.playlist
       });
     } catch (err) {
@@ -393,7 +381,41 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 5. MERCADO PAGO: PREFERENCIA DE PAGO
+  // 5. ACCIONES DE GESTIÓN RESELLER (ACTUALIZAR DIAS, REINICIAR, BLOQUEAR)
+  if (pathname === '/api/admin/device-action' && req.method === 'POST') {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
+
+    try {
+      const payload = await parseJsonBody(req);
+      const { deviceId, action } = payload;
+      const db = loadDb();
+      const device = db.devices[deviceId];
+
+      if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
+
+      const now = Date.now();
+      if (action === 'BLOCK') device.blockedManually = true;
+      else if (action === 'UNBLOCK') device.blockedManually = false;
+      else if (action === 'RESET_TRIAL') {
+        device.firstSeenAt = now;
+        device.licenseEndsAt = null;
+        device.blockedManually = false;
+      } else if (action === 'ACTIVATE_1Y') {
+        const oneYearMs = 365 * 24 * 60 * 60 * 1000;
+        const currentEnd = (device.licenseEndsAt && device.licenseEndsAt > now) ? device.licenseEndsAt : now;
+        device.licenseEndsAt = currentEnd + oneYearMs;
+        device.blockedManually = false;
+      }
+
+      saveDb(db);
+      return sendJson(res, 200, { ok: true, device, access: computeAccess(device, db.settings) });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // 6. CREAR PREFERENCIA MERCADO PAGO
   if (pathname === '/api/payment/create-preference' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -447,7 +469,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 6. WEBHOOK MERCADO PAGO
+  // 7. WEBHOOK MERCADO PAGO
   if (pathname === '/api/webhook/mercadopago') {
     try {
       let paymentId = parsedUrl.query['data.id'] || parsedUrl.query.id;
@@ -503,92 +525,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 7. CANJE MANUAL DE CÓDIGOS
-  if (pathname === '/api/license/activate' && req.method === 'POST') {
-    try {
-      const payload = await parseJsonBody(req);
-      const deviceId = (payload.deviceId || '').trim();
-      const code = (payload.code || '').trim().toUpperCase();
-
-      const db = loadDb();
-      const lic = db.licenses[code];
-
-      if (!lic) return sendJson(res, 400, { error: 'Código de licencia no válido o inexistente' });
-      if (lic.usedBy && lic.usedBy !== deviceId) {
-        return sendJson(res, 400, { error: 'Este código ya fue utilizado en otro dispositivo' });
-      }
-
-      let device = db.devices[deviceId];
-      const now = Date.now();
-      const durationMs = (lic.days || 365) * 24 * 60 * 60 * 1000;
-
-      if (!device) {
-        device = {
-          deviceId,
-          devicePin: Math.floor(1000 + Math.random() * 9000).toString(),
-          firstSeenAt: now,
-          lastSeenAt: now,
-          clientType: lic.tier || 'OFFICIAL',
-          licenseEndsAt: now + durationMs,
-          licenseCode: code,
-          blockedManually: false
-        };
-        db.devices[deviceId] = device;
-      } else {
-        const currentEnd = (device.licenseEndsAt && device.licenseEndsAt > now) ? device.licenseEndsAt : now;
-        device.licenseEndsAt = currentEnd + durationMs;
-        device.licenseCode = code;
-      }
-
-      lic.usedBy = deviceId;
-      lic.usedAt = now;
-
-      saveDb(db);
-      return sendJson(res, 200, {
-        ok: true,
-        message: `¡Licencia activada con éxito por ${lic.days || 365} días!`,
-        access: computeAccess(device, db.settings)
-      });
-    } catch (err) {
-      return sendJson(res, 500, { error: err.message });
-    }
-  }
-
-  // 8. ACCIONES ADMIN SOBRE DISPOSITIVOS
-  if (pathname === '/api/admin/device-action' && req.method === 'POST') {
-    const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
-
-    try {
-      const payload = await parseJsonBody(req);
-      const { deviceId, action } = payload;
-      const db = loadDb();
-      const device = db.devices[deviceId];
-
-      if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
-
-      const now = Date.now();
-      if (action === 'BLOCK') device.blockedManually = true;
-      else if (action === 'UNBLOCK') device.blockedManually = false;
-      else if (action === 'RESET_TRIAL') {
-        device.firstSeenAt = now;
-        device.licenseEndsAt = null;
-        device.blockedManually = false;
-      } else if (action === 'ACTIVATE_1Y') {
-        const oneYearMs = 365 * 24 * 60 * 60 * 1000;
-        const currentEnd = (device.licenseEndsAt && device.licenseEndsAt > now) ? device.licenseEndsAt : now;
-        device.licenseEndsAt = currentEnd + oneYearMs;
-        device.blockedManually = false;
-      }
-
-      saveDb(db);
-      return sendJson(res, 200, { ok: true, device, access: computeAccess(device, db.settings) });
-    } catch (err) {
-      return sendJson(res, 500, { error: err.message });
-    }
-  }
-
-  // 9. PROXY ULTRA RÁPIDO PARA STREAMING (TCP NO-DELAY + ZERO BUFFER LAG)
+  // 8. PROXY DE STREAMING CON DESTRUCCIÓN DE SOCKETS Y TCP NO-DELAY
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
     if (!targetUrl) {
@@ -639,7 +576,7 @@ const server = http.createServer(async (req, res) => {
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'Expires': '0',
-            'X-Accel-Buffering': 'no' // Desactiva almacenamiento en búfer de Nginx
+            'X-Accel-Buffering': 'no'
           };
 
           if (proxyRes.headers['content-length'] && !isLiveStream) {
@@ -648,7 +585,6 @@ const server = http.createServer(async (req, res) => {
           if (proxyRes.headers['content-range']) responseHeaders['Content-Range'] = proxyRes.headers['content-range'];
           if (proxyRes.headers['accept-ranges']) responseHeaders['Accept-Ranges'] = proxyRes.headers['accept-ranges'];
 
-          // TCP No-Delay para flujo constante sin congelamientos en FHD
           if (res.socket) res.socket.setNoDelay(true);
 
           res.writeHead(proxyRes.statusCode, responseHeaders);
@@ -681,7 +617,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 10. ARCHIVOS ESTÁTICOS
+  // 9. ARCHIVOS ESTÁTICOS
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
 
   fs.stat(filePath, (err, stats) => {

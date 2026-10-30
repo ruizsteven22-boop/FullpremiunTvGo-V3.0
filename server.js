@@ -112,23 +112,23 @@ function computeAccess(device, settings) {
   const trialDurationMs = (settings.trialDays || 12) * 24 * 60 * 60 * 1000;
 
   if (device.blockedManually) {
-    return { allowed: false, status: 'BLOCKED_ADMIN', daysLeft: 0, reason: 'Dispositivo bloqueado.' };
+    return { allowed: false, status: 'BLOCKED_ADMIN', daysLeft: 0, expiresAt: null, reason: 'Dispositivo bloqueado.' };
   }
 
   if (device.licenseEndsAt && device.licenseEndsAt > now) {
     const msLeft = device.licenseEndsAt - now;
     const daysLeft = Math.ceil(msLeft / (24 * 60 * 60 * 1000));
-    return { allowed: true, status: 'LICENSED', daysLeft, licenseEndsAt: device.licenseEndsAt };
+    return { allowed: true, status: 'LICENSED', daysLeft, expiresAt: device.licenseEndsAt };
   }
 
   const trialEndsAt = device.firstSeenAt + trialDurationMs;
   if (now < trialEndsAt) {
     const msLeft = trialEndsAt - now;
     const daysLeft = Math.ceil(msLeft / (24 * 60 * 60 * 1000));
-    return { allowed: true, status: 'TRIAL', daysLeft, trialEndsAt };
+    return { allowed: true, status: 'TRIAL', daysLeft, expiresAt: trialEndsAt };
   }
 
-  return { allowed: false, status: 'EXPIRED_TRIAL', daysLeft: 0, reason: 'Periodo de prueba finalizado.' };
+  return { allowed: false, status: 'EXPIRED_TRIAL', daysLeft: 0, expiresAt: trialEndsAt, reason: 'Periodo de prueba finalizado.' };
 }
 
 function parseJsonBody(req) {
@@ -210,7 +210,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. INICIALIZACIÓN DE LA PANTALLA (PIN FIJO PERMANENTE)
+  // 1. INICIALIZACIÓN DE LA PANTALLA
   if (pathname === '/api/device/init' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -255,6 +255,7 @@ const server = http.createServer(async (req, res) => {
         deviceId: device.deviceId,
         devicePin: device.devicePin,
         deviceModel: device.deviceModel,
+        clientNote: device.clientNote,
         playlist: device.playlist || null,
         access,
         pricing: db.settings,
@@ -284,18 +285,18 @@ const server = http.createServer(async (req, res) => {
       deviceModel: device.deviceModel,
       clientNote: device.clientNote,
       playlist: device.playlist || null,
+      adminNotice: device.customMessage ? { text: device.customMessage, active: true, target: 'PRIVATE' } : db.broadcastMessage,
       access: computeAccess(device, db.settings)
     });
   }
 
-  // 3. LOGIN UNIFICADO (DETECTA SI ES CLIENTE O ADMINISTRADOR)
+  // 3. LOGIN UNIFICADO (CLIENTE O ADMIN RESELLER)
   if (pathname === '/api/client/login' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
       const inputId = (payload.deviceId || '').trim();
       const inputPass = (payload.devicePin || '').trim();
 
-      // Acceso como Administrador / Reseller Maestro
       if (inputPass === ADMIN_PASSWORD || inputId === 'ADMIN') {
         const db = loadDb();
         const deviceList = Object.values(db.devices).map(dev => ({
@@ -311,7 +312,6 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      // Acceso como Cliente Individual (ID + PIN)
       const db = loadDb();
       const device = db.devices[inputId];
 
@@ -341,7 +341,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 4. GUARDAR O ASIGNAR LISTA REMOTAMENTE
+  // 4. GUARDAR / EDITAR LISTA REMOTAMENTE
   if (pathname === '/api/client/save-playlist' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -381,7 +381,32 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 5. ACCIONES DE GESTIÓN RESELLER (ACTUALIZAR DIAS, REINICIAR, BLOQUEAR)
+  // 5. ELIMINAR LISTA DE UN DISPOSITIVO (POR CLIENTE O ADMIN)
+  if (pathname === '/api/client/delete-playlist' && req.method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const targetId = (payload.deviceId || '').trim();
+      const pin = (payload.devicePin || '').trim();
+      const adminKey = req.headers['x-admin-key'];
+
+      const db = loadDb();
+      const device = db.devices[targetId];
+
+      if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
+      if (adminKey !== ADMIN_PASSWORD && device.devicePin !== pin) {
+        return sendJson(res, 401, { error: 'No autorizado' });
+      }
+
+      device.playlist = null;
+      saveDb(db);
+
+      return sendJson(res, 200, { ok: true, message: 'Lista eliminada del dispositivo.' });
+    } catch (err) {
+      return sendJson(res, 500, { error: err.message });
+    }
+  }
+
+  // 6. ACCIONES ADMIN (ELIMINAR PANTALLA, EDITAR DETALLES, MENSAJES, REINICIAR, +1 AÑO)
   if (pathname === '/api/admin/device-action' && req.method === 'POST') {
     const adminKey = req.headers['x-admin-key'];
     if (adminKey !== ADMIN_PASSWORD) return sendJson(res, 401, { error: 'Acceso no autorizado' });
@@ -392,12 +417,22 @@ const server = http.createServer(async (req, res) => {
       const db = loadDb();
       const device = db.devices[deviceId];
 
-      if (!device) return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
+      if (!device && action !== 'DELETE') {
+        return sendJson(res, 404, { error: 'Dispositivo no encontrado' });
+      }
 
       const now = Date.now();
-      if (action === 'BLOCK') device.blockedManually = true;
-      else if (action === 'UNBLOCK') device.blockedManually = false;
-      else if (action === 'RESET_TRIAL') {
+      if (action === 'DELETE') {
+        delete db.devices[deviceId];
+        saveDb(db);
+        return sendJson(res, 200, { ok: true, message: 'Dispositivo eliminado permanentemente.' });
+      } else if (action === 'EDIT_DETAILS') {
+        if (payload.clientNote !== undefined) device.clientNote = payload.clientNote.trim();
+        if (payload.deviceModel !== undefined) device.deviceModel = payload.deviceModel.trim();
+        if (payload.devicePin !== undefined && payload.devicePin.trim()) device.devicePin = payload.devicePin.trim();
+      } else if (action === 'SEND_MESSAGE') {
+        device.customMessage = payload.text ? payload.text.trim() : null;
+      } else if (action === 'RESET_TRIAL') {
         device.firstSeenAt = now;
         device.licenseEndsAt = null;
         device.blockedManually = false;
@@ -415,7 +450,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 6. CREAR PREFERENCIA MERCADO PAGO
+  // 7. MERCADO PAGO: PREFERENCIA
   if (pathname === '/api/payment/create-preference' && req.method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
@@ -469,7 +504,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 7. WEBHOOK MERCADO PAGO
+  // 8. WEBHOOK MERCADO PAGO
   if (pathname === '/api/webhook/mercadopago') {
     try {
       let paymentId = parsedUrl.query['data.id'] || parsedUrl.query.id;
@@ -525,7 +560,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 8. PROXY DE STREAMING CON DESTRUCCIÓN DE SOCKETS Y TCP NO-DELAY
+  // 9. PROXY ULTRA RÁPIDO PARA STREAMING
   if (pathname === '/proxy') {
     const targetUrl = parsedUrl.query.url;
     if (!targetUrl) {
@@ -617,7 +652,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 9. ARCHIVOS ESTÁTICOS
+  // 10. ARCHIVOS ESTÁTICOS
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
 
   fs.stat(filePath, (err, stats) => {

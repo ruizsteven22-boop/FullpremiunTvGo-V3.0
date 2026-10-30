@@ -67,6 +67,9 @@
       const [devicePin, setDevicePin] = useState(() => localStorage.getItem('tvgo_device_pin') || '----');
       const [deviceAccess, setDeviceAccess] = useState({ allowed: true, status: 'TRIAL', daysLeft: 12 });
 
+      const [adminNotice, setAdminNotice] = useState(null);
+      const [dismissedNotice, setDismissedNotice] = useState(false);
+
       const [favorites, setFavorites] = useState(() => {
         try {
           return JSON.parse(localStorage.getItem('tvgo_favorites') || '[]');
@@ -222,7 +225,14 @@
           }
           if (data.access) setDeviceAccess(data.access);
 
-          if (data.playlist && autoConnect) {
+          if (data.adminNotice?.active && data.adminNotice?.text) {
+            setAdminNotice(data.adminNotice);
+            setDismissedNotice(false);
+          } else {
+            setAdminNotice(null);
+          }
+
+          if (data.playlist && autoConnect && !auth) {
             connectWithPlaylist(data.playlist);
           }
         } catch (_) {}
@@ -230,7 +240,12 @@
 
       useEffect(() => {
         syncWithServer(true);
-      }, []);
+        // Polling cada 30 segundos para recibir mensajes o cambios de lista remotos
+        const interval = setInterval(() => {
+          syncWithServer(false);
+        }, 30000);
+        return () => clearInterval(interval);
+      }, [auth]);
 
       const toggleFavorite = (itemId, e) => {
         if (e) e.stopPropagation();
@@ -370,10 +385,28 @@
             </div>
           </header>
 
+          {/* BANNER DE MENSAJE PERSONALIZADO O COMUNICADO GLOBAL */}
+          {adminNotice && !dismissedNotice && (
+            <div className="bg-gradient-to-r from-violet-900 via-indigo-900 to-purple-900 border-b border-violet-500/50 px-4 py-3 flex items-center justify-between text-xs text-white shadow-2xl animate-fade-in">
+              <div className="flex items-center gap-3 max-w-4xl mx-auto">
+                <span className="text-xl animate-bounce">📢</span>
+                <span className="font-semibold leading-relaxed">
+                  <strong className="text-violet-200 uppercase font-black mr-1">Mensaje Full Premium:</strong>
+                  {adminNotice.text}
+                </span>
+              </div>
+              <button
+                onClick={() => setDismissedNotice(true)}
+                className="px-2.5 py-1 rounded-lg bg-black/40 hover:bg-black/60 text-slate-300 hover:text-white text-xs font-bold"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* CUERPO PRINCIPAL */}
           <main className="flex-1 w-full max-w-[1850px] mx-auto p-3 sm:p-5">
             {!auth ? (
-              /* PANTALLA DE EMPAREJAMIENTO CON PIN FIJO */
               <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6">
                 <div className="text-center space-y-2">
                   <div className="w-14 h-14 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg shadow-violet-600/30">
@@ -520,7 +553,7 @@
                 </section>
               </div>
             ) : (
-              /* CINE Y SERIES: ESTRUCTURA 2 COLUMNAS (CATEGORÍAS A LA IZQUIERDA | CATÁLOGO A LA DERECHA) */
+              /* CINE Y SERIES: ESTRUCTURA 2 COLUMNAS */
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
                 <aside className="lg:col-span-3 bg-[#090C18] border border-slate-800/80 rounded-3xl p-3.5 flex flex-col h-[760px] shadow-2xl">
                   <div className="pb-2.5 border-b border-slate-800/80 mb-2 px-1 flex items-center justify-between">
@@ -707,7 +740,7 @@
       );
     }
 
-    // REPRODUCTOR BLINDADO CONTRA PAUSAS EN 0:00 Y CON BUFFER PARA FHD CONTINUO
+    // REPRODUCTOR BLINDADO CON SOPORTE PARA FHD CONTINUO
     function VideoPlayer({ item, isLiveMode }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
@@ -748,7 +781,6 @@
         if (item.type === 'LIVE') {
           if (window.mpegts && window.mpegts.isSupported()) {
             try {
-              // CONFIGURACIÓN ÓPTIMA: liveBufferLatencyChasing en false EVITA CONGELAMIENTO EN FHD
               const player = window.mpegts.createPlayer({
                 type: 'm2ts',
                 isLive: true,
@@ -758,8 +790,8 @@
                 enableWorker: true,
                 lazyLoad: false,
                 enableStashBuffer: true,
-                stashInitialSize: 512 * 1024, // 512 KB búfer elástico para canales FHD
-                liveBufferLatencyChasing: false, // NO forzar cortes de fotogramas
+                stashInitialSize: 512 * 1024,
+                liveBufferLatencyChasing: false,
                 autoCleanupSourceBuffer: true,
                 autoCleanupMaxBackwardDuration: 30,
                 autoCleanupMinBackwardDuration: 15
@@ -773,7 +805,6 @@
                 const p = player.play();
                 if (p && p.catch) {
                   p.catch(() => {
-                    // Si Chrome bloquea autoplay con sonido, arrancar en mudo para que el video NUNCA se congele en 0:00
                     video.muted = true;
                     setNeedsUnmute(true);
                     player.play().catch(() => {});
@@ -802,7 +833,6 @@
             });
           }
         } else {
-          // VOD / PELÍCULAS / SERIES
           video.src = directProxyUrl;
           video.load();
           const p = video.play();

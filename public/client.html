@@ -15,18 +15,28 @@
   <script type="text/babel">
     const { useState, useEffect } = React;
 
+    function formatDateFriendly(timestamp) {
+      if (!timestamp) return 'No definida';
+      return new Date(timestamp).toLocaleDateString('es-CL', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      });
+    }
+
     function UnifiedPortal() {
       const [deviceId, setDeviceId] = useState(() => localStorage.getItem('tvgo_client_dev_id') || '');
       const [devicePin, setDevicePin] = useState(() => localStorage.getItem('tvgo_client_dev_pin') || '');
       const [isLoggedIn, setIsLoggedIn] = useState(false);
       const [userRole, setUserRole] = useState('CLIENT');
       const [deviceData, setDeviceData] = useState(null);
-      const [adminData, setAdminData] = useState({ devices: [], settings: {}, licenses: [] });
+      const [adminData, setAdminData] = useState({ devices: [], settings: [], licenses: [] });
 
       const [loading, setLoading] = useState(false);
       const [errorMsg, setErrorMsg] = useState('');
       const [successMsg, setSuccessMsg] = useState('');
 
+      // Modal para Cargar / Asignar Lista
       const [showPlaylistModal, setShowPlaylistModal] = useState(false);
       const [targetDeviceId, setTargetDeviceId] = useState('');
       const [targetPin, setTargetPin] = useState('');
@@ -38,6 +48,18 @@
       const [m3uUrl, setM3uUrl] = useState('');
       const [clientNote, setClientNote] = useState('');
       const [deviceModel, setDeviceModel] = useState('');
+
+      // Modal para Editar Dispositivo (Admin)
+      const [showEditDeviceModal, setShowEditDeviceModal] = useState(false);
+      const [editDevId, setEditDevId] = useState('');
+      const [editClientNote, setEditClientNote] = useState('');
+      const [editDeviceModel, setEditDeviceModel] = useState('');
+      const [editDevicePin, setEditDevicePin] = useState('');
+
+      // Modal para Enviar Mensaje a Pantalla
+      const [showMessageModal, setShowMessageModal] = useState(false);
+      const [msgDevId, setMsgDevId] = useState('');
+      const [messageText, setMessageText] = useState('');
 
       const [searchReseller, setSearchReseller] = useState('');
 
@@ -88,7 +110,7 @@
         }
       }, []);
 
-      const openEditModalForDevice = (dev) => {
+      const openPlaylistModal = (dev) => {
         setTargetDeviceId(dev.deviceId);
         setTargetPin(dev.devicePin);
         setClientNote(dev.clientNote || '');
@@ -143,13 +165,122 @@
           });
 
           const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Error al guardar la lista');
+          if (!res.ok) throw new Error(data.error || 'Error al guardar');
 
           setSuccessMsg(data.message);
           setShowPlaylistModal(false);
           handleLogin();
         } catch (err) {
           setErrorMsg(err.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleDeletePlaylist = async (targetId, pin) => {
+        if (!confirm(`¿Eliminar la lista asignada a ${targetId}?`)) return;
+        setLoading(true);
+        try {
+          const res = await fetch('/api/client/delete-playlist', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Admin-Key': userRole === 'ADMIN' ? devicePin : ''
+            },
+            body: JSON.stringify({ deviceId: targetId, devicePin: pin })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Error al eliminar lista');
+          setSuccessMsg(data.message);
+          handleLogin();
+        } catch (err) {
+          alert('Error: ' + err.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const openEditDeviceModal = (dev) => {
+        setEditDevId(dev.deviceId);
+        setEditClientNote(dev.clientNote || '');
+        setEditDeviceModel(dev.deviceModel || '');
+        setEditDevicePin(dev.devicePin || '');
+        setShowEditDeviceModal(true);
+      };
+
+      const handleSaveDeviceDetails = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+          const res = await fetch('/api/admin/device-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': devicePin },
+            body: JSON.stringify({
+              deviceId: editDevId,
+              action: 'EDIT_DETAILS',
+              clientNote: editClientNote,
+              deviceModel: editDeviceModel,
+              devicePin: editDevicePin
+            })
+          });
+          const result = await res.json();
+          if (!res.ok) throw new Error(result.error || 'Error al editar');
+          setShowEditDeviceModal(false);
+          setSuccessMsg('Datos del dispositivo actualizados con éxito.');
+          handleLogin();
+        } catch (err) {
+          alert('Error: ' + err.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const openMessageModal = (dev) => {
+        setMsgDevId(dev.deviceId);
+        setMessageText(dev.customMessage || '');
+        setShowMessageModal(true);
+      };
+
+      const handleSendMessage = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+          const res = await fetch('/api/admin/device-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': devicePin },
+            body: JSON.stringify({
+              deviceId: msgDevId,
+              action: 'SEND_MESSAGE',
+              text: messageText
+            })
+          });
+          const result = await res.json();
+          if (!res.ok) throw new Error(result.error || 'Error al enviar mensaje');
+          setShowMessageModal(false);
+          setSuccessMsg(messageText ? `Mensaje enviado a la pantalla ${msgDevId}` : `Mensaje eliminado de la pantalla`);
+          handleLogin();
+        } catch (err) {
+          alert('Error: ' + err.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleDeleteDevice = async (devId) => {
+        if (!confirm(`¿Estás SEGURO de eliminar permanentemente la pantalla ${devId}? Esta acción no se puede deshacer.`)) return;
+        setLoading(true);
+        try {
+          const res = await fetch('/api/admin/device-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': devicePin },
+            body: JSON.stringify({ deviceId: devId, action: 'DELETE' })
+          });
+          const result = await res.json();
+          if (!res.ok) throw new Error(result.error || 'Error al eliminar');
+          setSuccessMsg(`Pantalla ${devId} eliminada.`);
+          handleLogin();
+        } catch (err) {
+          alert('Error: ' + err.message);
         } finally {
           setLoading(false);
         }
@@ -202,7 +333,7 @@
       return (
         <div className="min-h-screen flex flex-col justify-between">
           <div>
-            <header className="bg-[#343A40] text-white px-6 py-4 flex flex-wrap items-center justify-between gap-4 border-b border-slate-700">
+            <header className="bg-[#343A40] text-white px-6 py-4 flex flex-wrap items-center justify-between gap-4 border-b border-slate-700 shadow-md">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center font-extrabold text-white text-base">
                   TV
@@ -222,7 +353,7 @@
                   </span>
                   <button
                     onClick={() => { setIsLoggedIn(false); localStorage.removeItem('tvgo_client_dev_pin'); }}
-                    className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-bold"
+                    className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-bold transition"
                   >
                     Cerrar Sesión
                   </button>
@@ -289,7 +420,9 @@
                   </form>
                 </div>
               ) : userRole === 'ADMIN' ? (
-                /* VISTA RESELLER UNIFICADA (SMARTONE STYLE) */
+                /* ============================================================ */
+                /* VISTA RESELLER UNIFICADA CON TODAS LAS OPCIONES SOLICITADAS  */
+                /* ============================================================ */
                 <div className="space-y-6">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
@@ -314,7 +447,7 @@
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <h3 className="text-base font-black text-slate-800">Lista de Teclas Inteligentes / Dispositivos</h3>
-                        <p className="text-xs text-slate-500">Administra los accesos, vencimientos y listas de tus clientes</p>
+                        <p className="text-xs text-slate-500">Administra accesos, vencimientos, mensajes y listas de tus clientes</p>
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -346,7 +479,7 @@
                             <th className="p-3 rounded-l-xl">Estado</th>
                             <th className="p-3">ID Dispositivo (MAC)</th>
                             <th className="p-3">PIN Fijo</th>
-                            <th className="p-3">Vencimiento</th>
+                            <th className="p-3">Vencimiento (Caducidad)</th>
                             <th className="p-3">Dispositivo</th>
                             <th className="p-3">Nota / Cliente</th>
                             <th className="p-3">Lista Asignada</th>
@@ -365,36 +498,79 @@
                                     {isLicensed ? '✔ Activado' : '⏳ Prueba'}
                                   </span>
                                 </td>
-                                <td className="p-3 font-mono font-bold text-violet-700">{dev.deviceId}</td>
+                                <td className="p-3 font-mono font-bold text-violet-700">
+                                  {dev.deviceId}
+                                  {dev.customMessage && (
+                                    <div className="text-[10px] text-amber-600 truncate max-w-[140px]" title={dev.customMessage}>
+                                      💬 "{dev.customMessage}"
+                                    </div>
+                                  )}
+                                </td>
                                 <td className="p-3 font-mono font-bold text-slate-700">{dev.devicePin || '----'}</td>
-                                <td className="p-3 text-slate-600">{dev.computed?.daysLeft} días restantes</td>
+                                <td className="p-3">
+                                  <div className="font-bold text-slate-800">{formatDateFriendly(dev.computed?.expiresAt)}</div>
+                                  <div className="text-[10px] text-slate-500 font-mono">({dev.computed?.daysLeft} días restantes)</div>
+                                </td>
                                 <td className="p-3 text-slate-500">{dev.deviceModel || 'Smart TV'}</td>
                                 <td className="p-3 font-bold text-slate-800">{dev.clientNote || 'Sin nota'}</td>
                                 <td className="p-3 text-slate-600">
                                   {dev.playlist ? (
-                                    <span className="font-semibold text-blue-600">{dev.playlist.name || 'Lista Activa'}</span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-semibold text-blue-600">{dev.playlist.name || 'Lista Activa'}</span>
+                                      <button
+                                        onClick={() => handleDeletePlaylist(dev.deviceId, dev.devicePin)}
+                                        className="text-rose-500 hover:text-rose-700 font-bold"
+                                        title="Eliminar lista de esta pantalla"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
                                   ) : (
                                     <span className="text-slate-400 italic">Sin lista</span>
                                   )}
                                 </td>
                                 <td className="p-3 text-right space-x-1 whitespace-nowrap">
                                   <button
-                                    onClick={() => openEditModalForDevice(dev)}
-                                    className="px-2.5 py-1 rounded-lg bg-blue-100 text-blue-700 font-bold hover:bg-blue-200"
+                                    onClick={() => openPlaylistModal(dev)}
+                                    className="px-2 py-1 rounded-lg bg-blue-100 text-blue-700 font-bold hover:bg-blue-200"
+                                    title="Cargar o cambiar lista"
                                   >
-                                    Cargar Lista
+                                    Lista
+                                  </button>
+                                  <button
+                                    onClick={() => openEditDeviceModal(dev)}
+                                    className="px-2 py-1 rounded-lg bg-slate-200 text-slate-700 font-bold hover:bg-slate-300"
+                                    title="Editar datos del cliente, modelo y PIN"
+                                  >
+                                    ✏️ Editar
+                                  </button>
+                                  <button
+                                    onClick={() => openMessageModal(dev)}
+                                    className="px-2 py-1 rounded-lg bg-purple-100 text-purple-700 font-bold hover:bg-purple-200"
+                                    title="Enviar mensaje directo a la pantalla"
+                                  >
+                                    💬 Mensaje
                                   </button>
                                   <button
                                     onClick={() => handleDeviceAction(dev.deviceId, 'ACTIVATE_1Y')}
-                                    className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-700 font-bold hover:bg-emerald-200"
+                                    className="px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700 font-bold hover:bg-emerald-200"
+                                    title="Sumar 365 días"
                                   >
                                     +1 Año
                                   </button>
                                   <button
                                     onClick={() => handleDeviceAction(dev.deviceId, 'RESET_TRIAL')}
-                                    className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
+                                    className="px-2 py-1 rounded-lg bg-amber-100 text-amber-700 font-bold hover:bg-amber-200"
+                                    title="Reiniciar periodo de 12 días"
                                   >
                                     Reiniciar
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteDevice(dev.deviceId)}
+                                    className="px-2 py-1 rounded-lg bg-rose-100 text-rose-700 font-bold hover:bg-rose-200"
+                                    title="Eliminar pantalla por completo"
+                                  >
+                                    🗑️ Borrar
                                   </button>
                                 </td>
                               </tr>
@@ -406,7 +582,9 @@
                   </div>
                 </div>
               ) : (
-                /* VISTA CLIENTE INDIVIDUAL */
+                /* ============================================================ */
+                /* VISTA CLIENTE CON TABLA DE LISTA Y FECHA DE CADUCIDAD        */
+                /* ============================================================ */
                 <div className="space-y-6">
                   <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-wrap items-center justify-between gap-4">
                     <div>
@@ -416,8 +594,11 @@
                       <p className="text-xs text-slate-500 mt-0.5">
                         PIN Permanente: <strong className="font-mono text-slate-800">{deviceData.devicePin}</strong> | Estado:{' '}
                         <strong className={deviceData.access.status === 'LICENSED' ? 'text-emerald-600' : 'text-amber-600'}>
-                          {deviceData.access.status === 'LICENSED' ? `Activo (365 días)` : `Prueba (${deviceData.access.daysLeft} días)`}
+                          {deviceData.access.status === 'LICENSED' ? `Activo (${deviceData.access.daysLeft} días)` : `Prueba (${deviceData.access.daysLeft} días)`}
                         </strong>
+                      </p>
+                      <p className="text-xs text-slate-600 mt-1 font-semibold">
+                        Fecha de Caducidad: <strong className="text-violet-700">{formatDateFriendly(deviceData.access.expiresAt)}</strong>
                       </p>
                     </div>
 
@@ -429,9 +610,9 @@
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div
-                      onClick={() => openEditModalForDevice(deviceData)}
+                      onClick={() => openPlaylistModal(deviceData)}
                       className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col justify-between hover:border-violet-500 cursor-pointer transition"
                     >
                       <div className="space-y-2">
@@ -470,11 +651,72 @@
                       <div className="mt-4 text-xs font-bold text-purple-600">Contactar →</div>
                     </a>
                   </div>
+
+                  {/* TABLA DE LISTAS ASIGNADAS CON FECHA DE CADUCIDAD */}
+                  <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-sm font-black text-slate-800">Listas Asignadas a esta Pantalla</h4>
+                        <p className="text-xs text-slate-500">Tu televisor se conecta automáticamente con esta información</p>
+                      </div>
+                      <button
+                        onClick={() => openPlaylistModal(deviceData)}
+                        className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm"
+                      >
+                        {deviceData.playlist ? 'Editar Lista' : '+ Cargar Lista'}
+                      </button>
+                    </div>
+
+                    {deviceData.playlist ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-100 text-slate-600 font-bold text-[10px] uppercase">
+                            <tr>
+                              <th className="p-3 rounded-l-xl">Nombre de Lista</th>
+                              <th className="p-3">Tipo</th>
+                              <th className="p-3">Servidor / URL</th>
+                              <th className="p-3">Usuario</th>
+                              <th className="p-3">Fecha de Caducidad</th>
+                              <th className="p-3 rounded-r-xl text-right">Acciones</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            <tr>
+                              <td className="p-3 font-bold text-slate-800">{deviceData.playlist.name}</td>
+                              <td className="p-3 font-mono font-bold text-violet-600">{deviceData.playlist.type}</td>
+                              <td className="p-3 text-slate-500 font-mono truncate max-w-xs">{deviceData.playlist.host || deviceData.playlist.m3uUrl}</td>
+                              <td className="p-3 font-bold text-slate-700">{deviceData.playlist.username || '-'}</td>
+                              <td className="p-3 font-bold text-emerald-700">{formatDateFriendly(deviceData.access.expiresAt)}</td>
+                              <td className="p-3 text-right space-x-1">
+                                <button
+                                  onClick={() => openPlaylistModal(deviceData)}
+                                  className="px-2.5 py-1 rounded-lg bg-blue-100 text-blue-700 font-bold hover:bg-blue-200"
+                                >
+                                  Editar
+                                </button>
+                                <button
+                                  onClick={() => handleDeletePlaylist(deviceData.deviceId, deviceData.devicePin)}
+                                  className="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-700 font-bold hover:bg-rose-200"
+                                >
+                                  Eliminar
+                                </button>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="p-8 text-center text-slate-400 text-xs border border-dashed rounded-xl">
+                        Aún no tienes ninguna lista asignada a este televisor. Pulsa <strong>+ Cargar Lista</strong> arriba para activarla.
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </main>
           </div>
 
+          {/* MODAL 1: CARGAR / ASIGNAR LISTA */}
           {showPlaylistModal && (
             <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4">
@@ -510,7 +752,7 @@
                         <label className="block font-bold text-slate-700 mb-1">Nombre Cliente (Nota)</label>
                         <input
                           type="text"
-                          placeholder="Ej: Claudio González"
+                          placeholder="Ej: Dennis Neyra"
                           value={clientNote}
                           onChange={e => setClientNote(e.target.value)}
                           className="w-full px-3 py-2 rounded-xl border border-slate-300"
@@ -520,7 +762,7 @@
                         <label className="block font-bold text-slate-700 mb-1">Modelo Pantalla</label>
                         <input
                           type="text"
-                          placeholder="Ej: Samsung 2025"
+                          placeholder="Ej: Xiaomi 11 / Samsung"
                           value={deviceModel}
                           onChange={e => setDeviceModel(e.target.value)}
                           className="w-full px-3 py-2 rounded-xl border border-slate-300"
@@ -546,7 +788,7 @@
                         <label className="block font-bold text-slate-700 mb-1">Servidor (Host:Puerto)</label>
                         <input
                           type="url"
-                          placeholder="http://servidor.com:8080"
+                          placeholder="http://ejemplo.com:8080"
                           value={serverHost}
                           onChange={e => setServerHost(e.target.value)}
                           className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono text-xs"
@@ -603,7 +845,128 @@
                       disabled={loading}
                       className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold shadow-md"
                     >
-                      {loading ? 'Guardando...' : 'Guardar Lista'}
+                      {loading ? 'Guardando...' : 'Guardar y Sincronizar'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL 2: EDITAR DISPOSITIVO (ADMIN) */}
+          {showEditDeviceModal && (
+            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+                <div className="flex items-center justify-between border-b pb-3">
+                  <h3 className="text-base font-black text-slate-800">Editar Datos del Dispositivo</h3>
+                  <button onClick={() => setShowEditDeviceModal(false)} className="text-slate-400 hover:text-slate-600 font-bold">✕</button>
+                </div>
+
+                <form onSubmit={handleSaveDeviceDetails} className="space-y-3 text-xs">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">ID de Dispositivo</label>
+                    <input
+                      type="text"
+                      value={editDevId}
+                      disabled
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 font-mono text-slate-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Nombre / Nota del Cliente</label>
+                    <input
+                      type="text"
+                      placeholder="Ej: Claudio González"
+                      value={editClientNote}
+                      onChange={e => setEditClientNote(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Modelo de Televisor / Pantalla</label>
+                    <input
+                      type="text"
+                      placeholder="Ej: LG 2021 / Samsung 2025"
+                      value={editDeviceModel}
+                      onChange={e => setEditDeviceModel(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">PIN Fijo (4 Dígitos)</label>
+                    <input
+                      type="text"
+                      maxLength="4"
+                      value={editDevicePin}
+                      onChange={e => setEditDevicePin(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono text-base font-bold text-violet-700"
+                      required
+                    />
+                  </div>
+
+                  <div className="pt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowEditDeviceModal(false)}
+                      className="flex-1 py-2.5 rounded-xl bg-slate-200 text-slate-700 font-bold"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold shadow-md"
+                    >
+                      Guardar Cambios
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL 3: ENVIAR MENSAJE A PANTALLA */}
+          {showMessageModal && (
+            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+                <div className="flex items-center justify-between border-b pb-3">
+                  <div>
+                    <h3 className="text-base font-black text-slate-800">Enviar Mensaje a Pantalla</h3>
+                    <p className="text-xs text-slate-500 font-mono">{msgDevId}</p>
+                  </div>
+                  <button onClick={() => setShowMessageModal(false)} className="text-slate-400 hover:text-slate-600 font-bold">✕</button>
+                </div>
+
+                <form onSubmit={handleSendMessage} className="space-y-3 text-xs">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Texto del Mensaje (aparecerá en la TV)</label>
+                    <textarea
+                      rows="3"
+                      placeholder="Ej: Estimado cliente, su suscripción vence mañana. Favor renovar para evitar corte."
+                      value={messageText}
+                      onChange={e => setMessageText(e.target.value)}
+                      className="w-full p-3 rounded-xl border border-slate-300 text-xs"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">Deja el texto en blanco para borrar el mensaje de la pantalla.</p>
+                  </div>
+
+                  <div className="pt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowMessageModal(false)}
+                      className="flex-1 py-2.5 rounded-xl bg-slate-200 text-slate-700 font-bold"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold shadow-md"
+                    >
+                      {messageText ? 'Enviar a la TV' : 'Borrar Mensaje'}
                     </button>
                   </div>
                 </form>

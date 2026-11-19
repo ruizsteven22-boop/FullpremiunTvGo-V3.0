@@ -18,6 +18,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
+    html { font-size: clamp(12px, 1.35vw, 16px); }
     body { font-family: 'Plus Jakarta Sans', sans-serif; }
     .font-mono { font-family: 'JetBrains Mono', monospace; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -550,10 +551,10 @@
       useEffect(() => {
         registerTizenRemoteKeys();
         syncWithServer(true);
-        // Polling cada 30 segundos para recibir mensajes o cambios de lista remotos
+        // Polling cada 10 segundos: si aún no entra, conecta automáticamente apenas se cargue la lista desde el portal
         const interval = setInterval(() => {
-          syncWithServer(false);
-        }, 30000);
+          syncWithServer(!authRef.current);
+        }, 10000);
         return () => clearInterval(interval);
       }, []);
 
@@ -891,88 +892,96 @@
           {/* CUERPO PRINCIPAL */}
           <main className={`flex-1 w-full ${isLiveTvShell ? 'min-h-0 overflow-hidden p-0' : 'max-w-[1850px] mx-auto p-2.5 sm:p-4'}`}>
             {!deviceAccess.allowed ? (
-              <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-rose-500/40 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6 text-center">
-                <div className="w-14 h-14 bg-rose-600/20 border border-rose-500/40 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto text-rose-400">
-                  🔒
-                </div>
-                <div className="space-y-2">
-                  <h2 className="text-2xl font-black text-white">
-                    {deviceAccess.status === 'BLOCKED_ADMIN' ? 'Pantalla Bloqueada' : 'Periodo de Prueba Finalizado'}
-                  </h2>
+              <div className="min-h-[calc(100vh-64px)] flex items-center justify-center p-2">
+                <div className="w-full max-w-xl bg-[#0A0D1A] border border-rose-500/40 rounded-3xl p-5 shadow-2xl space-y-3.5 text-center">
+                  <div className="flex items-center justify-center gap-3">
+                    <div className="w-10 h-10 bg-rose-600/20 border border-rose-500/40 rounded-xl flex items-center justify-center font-black text-lg text-rose-400">
+                      🔒
+                    </div>
+                    <h2 className="text-xl font-black text-white">
+                      {deviceAccess.status === 'BLOCKED_ADMIN' ? 'Pantalla Bloqueada' : 'Periodo de Prueba Finalizado'}
+                    </h2>
+                  </div>
                   <p className="text-xs text-slate-400 max-w-md mx-auto">
                     {deviceAccess.reason || 'Activa tu licencia anual (365 días) para continuar disfrutando de Full Premium TvGo.'}
                   </p>
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
-                    <span className="text-[11px] font-extrabold uppercase text-slate-400">ID de esta Pantalla</span>
-                    <div className="text-lg font-mono font-black text-violet-400 select-all tracking-wider">{deviceId}</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-0.5">
+                      <span className="text-[10px] font-extrabold uppercase text-slate-400">ID de esta Pantalla</span>
+                      <div className="text-base font-mono font-black text-cyan-300 select-all tracking-wider">{deviceId}</div>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-0.5">
+                      <span className="text-[10px] font-extrabold uppercase text-slate-400">Tu Clave PIN Fijo</span>
+                      <div className="text-xl font-mono font-black text-emerald-400 tracking-widest">{devicePin}</div>
+                    </div>
                   </div>
-                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
-                    <span className="text-[11px] font-extrabold uppercase text-slate-400">Tu Clave PIN Fijo</span>
-                    <div className="text-2xl font-mono font-black text-emerald-400 tracking-widest">{devicePin}</div>
+
+                  <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs text-slate-300 space-y-0.5">
+                    <div>Ingresa a <strong className="text-cyan-300">app.fullpremiumtvcl.com/client.html</strong> con tu ID y PIN para activar tu año.</div>
+                    <div className="text-[11px] text-slate-400">Soporte: WhatsApp <strong>+56979429123</strong> | <strong>activations@app.fullpremiumtvcl.com</strong></div>
                   </div>
-                </div>
 
-                <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs text-slate-300 space-y-1">
-                  <div>Ingresa a <strong className="text-violet-300">app.fullpremiumtvcl.com/client.html</strong> con tu ID y PIN para activar tu año.</div>
-                  <div className="text-[11px] text-slate-400">Soporte: WhatsApp <strong>+56979429123</strong> | <strong>activations@app.fullpremiumtvcl.com</strong></div>
+                  <button
+                    autoFocus
+                    onClick={() => syncWithServer(true)}
+                    disabled={loading}
+                    className="w-full py-3 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 text-slate-950 font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
+                  >
+                    <span>🔄</span> {loading ? loadingStatus : 'Verificar Activación'}
+                  </button>
                 </div>
-
-                <button
-                  onClick={() => syncWithServer(true)}
-                  disabled={loading}
-                  className="w-full py-4 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 text-white font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
-                >
-                  <span>🔄</span> {loading ? loadingStatus : 'Verificar Activación'}
-                </button>
               </div>
             ) : !auth ? (
-              <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6">
-                <div className="text-center space-y-2">
-                  <div className="w-14 h-14 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg shadow-violet-600/30">
-                    TV
-                  </div>
-                  <h2 className="text-2xl font-black text-white">Full Premium TvGo</h2>
-                  <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Tu pantalla está lista. Carga tus listas remotamente sin digitar contraseñas en tu televisor.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
-                    <span className="text-[11px] font-extrabold uppercase text-slate-400">ID de esta Pantalla</span>
-                    <div className="text-lg font-mono font-black text-violet-400 select-all tracking-wider">{deviceId}</div>
+              <div className="min-h-[calc(100vh-64px)] flex items-center justify-center p-2">
+                <div className="w-full max-w-xl bg-[#0A1326] border border-cyan-500/25 rounded-3xl p-5 shadow-2xl space-y-3.5">
+                  <div className="text-center space-y-1">
+                    <div className="flex items-center justify-center gap-2.5">
+                      <div className="w-10 h-10 bg-gradient-to-tr from-cyan-500 to-indigo-600 rounded-xl flex items-center justify-center font-black text-base text-white shadow-lg shadow-cyan-500/25">
+                        TV
+                      </div>
+                      <h2 className="text-xl font-black text-white">Full Premium TvGo</h2>
+                    </div>
+                    <p className="text-xs text-slate-300 max-w-md mx-auto">
+                      Tu pantalla está lista. Carga tus listas remotamente sin digitar contraseñas en tu televisor.
+                    </p>
                   </div>
 
-                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
-                    <span className="text-[11px] font-extrabold uppercase text-slate-400">Tu Clave PIN Fijo</span>
-                    <div className="text-2xl font-mono font-black text-emerald-400 tracking-widest">{devicePin}</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 rounded-2xl bg-slate-950/70 border border-cyan-500/20 text-center space-y-0.5">
+                      <span className="text-[10px] font-extrabold uppercase text-slate-400">ID de esta Pantalla</span>
+                      <div className="text-base font-mono font-black text-cyan-300 select-all tracking-wider">{deviceId}</div>
+                    </div>
+
+                    <div className="p-3 rounded-2xl bg-slate-950/70 border border-cyan-500/20 text-center space-y-0.5">
+                      <span className="text-[10px] font-extrabold uppercase text-slate-400">Tu Clave PIN Fijo</span>
+                      <div className="text-xl font-mono font-black text-emerald-400 tracking-widest">{devicePin}</div>
+                    </div>
                   </div>
-                </div>
 
-                <div className="p-4 rounded-2xl bg-violet-950/30 border border-violet-500/30 text-xs text-slate-300 space-y-2">
-                  <div className="font-bold text-white flex items-center gap-1.5">
-                    <span>📲</span> ¿Cómo cargar tus listas?
+                  <div className="p-3 rounded-2xl bg-cyan-950/30 border border-cyan-500/25 text-xs text-slate-200 space-y-1">
+                    <div className="font-bold text-white flex items-center gap-1.5">
+                      <span>📲</span> ¿Cómo cargar tus listas?
+                    </div>
+                    <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-slate-300">
+                      <li>Entra desde tu celular a: <strong className="text-cyan-300">app.fullpremiumtvcl.com/client.html</strong></li>
+                      <li>Digita tu <strong>ID</strong> y <strong>PIN</strong> fijo que ves arriba.</li>
+                      <li>Guarda tu cuenta Xtream o enlace — entrará automáticamente o presiona el botón de abajo.</li>
+                    </ol>
                   </div>
-                  <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-300">
-                    <li>Entra desde tu celular a: <strong className="text-violet-300">app.fullpremiumtvcl.com/client.html</strong></li>
-                    <li>Digita tu <strong>ID</strong> y <strong>PIN</strong> fijo que ves arriba.</li>
-                    <li>Guarda tu cuenta Xtream o enlace y presiona el botón de abajo.</li>
-                  </ol>
-                </div>
 
-                <button
-                  onClick={() => syncWithServer(true)}
-                  disabled={loading}
-                  className="w-full py-4 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 text-white font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
-                >
-                  <span>🔄</span> {loading ? loadingStatus : 'Sincronizar y Entrar'}
-                </button>
+                  <button
+                    autoFocus
+                    onClick={() => syncWithServer(true)}
+                    disabled={loading}
+                    className="w-full py-3 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 text-slate-950 font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
+                  >
+                    <span>🔄</span> {loading ? loadingStatus : 'Sincronizar y Entrar'}
+                  </button>
 
-                <div className="text-center text-[11px] text-slate-400 pt-1">
-                  Soporte: WhatsApp <strong className="text-slate-200">+56979429123</strong> | <strong className="text-slate-200">activations@app.fullpremiumtvcl.com</strong>
+                  <div className="text-center text-[10px] text-slate-400">
+                    Soporte: WhatsApp <strong className="text-slate-200">+56979429123</strong> | <strong className="text-slate-200">activations@app.fullpremiumtvcl.com</strong>
+                  </div>
                 </div>
               </div>
             ) : activeTab === 'LIVE' ? (

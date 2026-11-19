@@ -30,6 +30,10 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://app.fullpremium
   .map(o => o.trim().toLowerCase())
   .filter(Boolean);
 
+const ALLOWED_HOSTS = ALLOWED_ORIGINS.map((o) => {
+  try { return new URL(o).host.toLowerCase(); } catch (_) { return ''; }
+}).filter(Boolean);
+
 const ADMIN_COOKIE_NAME = 'tvgo_admin_session';
 const ADMIN_SESSION_TTL_SEC = 8 * 60 * 60; // 8 horas
 
@@ -265,6 +269,30 @@ function isOriginAllowed(originOrReferer) {
   } catch (_) {
     return false;
   }
+}
+
+function isProxyRequestAllowed(req) {
+  const secFetchSite = (req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (secFetchSite === 'cross-site') return false;
+
+  const origin = req.headers.origin;
+  if (origin && origin !== 'null') {
+    return isOriginAllowed(origin);
+  }
+
+  const referer = req.headers.referer;
+  if (referer) {
+    return isOriginAllowed(referer);
+  }
+
+  // Web Workers (mpegts.js / hls.js en blob:) y <video> en Smart TVs omiten Origin/Referer en peticiones same-origin
+  if (secFetchSite === 'same-origin') return true;
+
+  const reqHost = (req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim().toLowerCase();
+  if (reqHost && ALLOWED_HOSTS.includes(reqHost)) return true;
+  if (NODE_ENV !== 'production' && (reqHost.startsWith('localhost') || reqHost.startsWith('127.0.0.1'))) return true;
+
+  return false;
 }
 
 function isPrivateOrBlockedHost(hostname) {
@@ -808,10 +836,9 @@ async function handleMercadoPagoWebhook(req, res) {
 app.all('/api/webhooks/mercadopago', handleMercadoPagoWebhook);
 app.all('/api/webhook/mercadopago', handleMercadoPagoWebhook);
 
-// 9. PROXY ANTI-ZOMBIES PROTEGIDO (ORIGIN/REFERER + ANTI-SSRF)
+// 9. PROXY ANTI-ZOMBIES PROTEGIDO (ORIGIN/REFERER/SAME-ORIGIN + ANTI-SSRF)
 function handleStreamProxy(req, res) {
-  const originHeader = req.headers.origin || req.headers.referer || '';
-  if (!isOriginAllowed(originHeader)) {
+  if (!isProxyRequestAllowed(req)) {
     return res.status(403).type('text/plain').send('Acceso denegado al proxy');
   }
 

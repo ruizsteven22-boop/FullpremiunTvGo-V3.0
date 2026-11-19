@@ -887,18 +887,60 @@ async function handleMercadoPagoWebhook(req, res) {
 app.all('/api/webhooks/mercadopago', handleMercadoPagoWebhook);
 app.all('/api/webhook/mercadopago', handleMercadoPagoWebhook);
 
-// 9. PROXY ULTRA RÁPIDO PARA STREAMING + REMUX FFMPEG (CAMBIO DE AUDIO / MKV / DUAL / LIVE FALLBACK)
+// 9. GESTOR DE PROCESOS Y PROXY ULTRA RÁPIDO PARA STREAMING
+const activeDeviceFfmpeg = new Map();
+const activeDeviceLiveProxy = new Map();
+
+function killDeviceFfmpeg(deviceId) {
+  if (!deviceId) return;
+  const prev = activeDeviceFfmpeg.get(deviceId);
+  if (prev && typeof prev === 'function') {
+    try { prev(); } catch (_) {}
+  }
+  activeDeviceFfmpeg.delete(deviceId);
+}
+
+function killDeviceLiveProxy(deviceId) {
+  if (!deviceId) return;
+  const prev = activeDeviceLiveProxy.get(deviceId);
+  if (prev && typeof prev === 'function') {
+    try { prev(); } catch (_) {}
+  }
+  activeDeviceLiveProxy.delete(deviceId);
+}
+
+app.get('/api/media/stop', (req, res) => {
+  const deviceId = (req.query.deviceId || '').toString().trim();
+  if (deviceId) {
+    killDeviceFfmpeg(deviceId);
+    killDeviceLiveProxy(deviceId);
+  }
+  return res.status(200).json({ ok: true });
+});
+
 function handleStreamProxy(req, res) {
   const targetUrl = (req.query.url || '').toString();
+  const deviceId = (req.query.deviceId || '').toString().trim();
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
+  }
+
+  const isApiCall = targetUrl.includes('player_api.php') || targetUrl.includes('panel_api.php') || targetUrl.includes('xmltv.php');
+  const isLiveStreamReq = !isApiCall && (targetUrl.includes('/live/') || /\.ts(\?|$)/i.test(targetUrl));
+
+  if (!isApiCall && deviceId) {
+    // Si el usuario pidió un stream directo por /proxy, cerrar cualquier ffmpeg anterior de ese dispositivo
+    killDeviceFfmpeg(deviceId);
+    if (isLiveStreamReq) {
+      killDeviceLiveProxy(deviceId);
+    }
   }
 
   let activeProxyReq = null;
   let activeProxyRes = null;
   let clientClosed = false;
 
-  res.on('close', () => {
+  const cleanupProxy = () => {
     clientClosed = true;
     if (activeProxyRes) {
       try { activeProxyRes.destroy(); } catch (_) {}
@@ -907,6 +949,17 @@ function handleStreamProxy(req, res) {
     if (activeProxyReq) {
       try { activeProxyReq.destroy(); } catch (_) {}
       activeProxyReq = null;
+    }
+  };
+
+  if (isLiveStreamReq && deviceId) {
+    activeDeviceLiveProxy.set(deviceId, cleanupProxy);
+  }
+
+  res.on('close', () => {
+    cleanupProxy();
+    if (isLiveStreamReq && deviceId && activeDeviceLiveProxy.get(deviceId) === cleanupProxy) {
+      activeDeviceLiveProxy.delete(deviceId);
     }
   });
 
@@ -934,9 +987,9 @@ function handleStreamProxy(req, res) {
     const proxyReq = client.request(currentUrl, {
       method: req.method,
       headers: {
-        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': '*/*',
-        'Connection': 'keep-alive',
+        'Connection': 'close',
         ...(req.headers.range ? { 'Range': req.headers.range } : {})
       }
     }, (proxyRes) => {
@@ -954,10 +1007,25 @@ function handleStreamProxy(req, res) {
       activeProxyRes = proxyRes;
 
       const isLiveStream = currentUrl.includes('/live/') || /\.ts(\?|$)/i.test(currentUrl);
+      const isMkv = /\.mkv(\?|$)/i.test(currentUrl);
+      const isHls = /\.m3u8(\?|$)/i.test(currentUrl);
+      const fallbackMime = isApiCall
+        ? 'application/json; charset=utf-8'
+        : isHls
+          ? 'application/vnd.apple.mpegurl'
+          : isLiveStream
+            ? 'video/mp2t'
+            : isMkv
+              ? 'video/x-matroska'
+              : 'video/mp4';
+
+      const upstreamType = proxyRes.headers['content-type'];
+      const contentType = (upstreamType && upstreamType !== 'application/octet-stream') ? upstreamType : fallbackMime;
+
       const responseHeaders = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': '*',
-        'Content-Type': proxyRes.headers['content-type'] || (isLiveStream ? 'video/mp2t' : 'video/mp4'),
+        'Content-Type': contentType,
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
@@ -1038,9 +1106,9 @@ app.get('/api/media/tracks', (req, res) => {
 
   const proc = spawn(ffmpegPath, [
     '-hide_banner',
-    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
-    '-probesize', '2000000',
-    '-analyzeduration', '2000000',
+    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
+    '-probesize', '1500000',
+    '-analyzeduration', '1500000',
     '-i', targetUrl
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
@@ -1082,7 +1150,7 @@ app.get('/api/media/tracks', (req, res) => {
     return res.status(200).json({ ok: true, audioTracks: tracks });
   };
 
-  const timer = setTimeout(finishProbe, 3500);
+  const timer = setTimeout(finishProbe, 3000);
 
   proc.stderr.on('data', (chunk) => {
     stderrData += chunk.toString();
@@ -1103,11 +1171,10 @@ app.get('/api/media/tracks', (req, res) => {
   });
 });
 
-// 9C. STREAMING UNIVERSAL REMUX CON FFMPEG (SOPORTA MKV, AC3/EAC3, DUAL AUDIO Y LIVE TV)
-app.get('/api/media/stream', (req, res) => {
+// 9C. TRANSCODIFICADOR EN VIVO MPEG-TS (CONVIERTE CANALES MPEG2VIDEO/MP2/AC3 A H.264 + AAC PARA MPEGTS.JS)
+app.get('/api/media/live-ts', (req, res) => {
   const targetUrl = (req.query.url || '').toString().trim();
-  const audioTrack = Math.max(0, parseInt(req.query.audioTrack || '0', 10) || 0);
-  const startSec = Math.max(0, parseFloat(req.query.start || '0') || 0);
+  const deviceId = (req.query.deviceId || '').toString().trim();
 
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
@@ -1126,10 +1193,103 @@ app.get('/api/media/stream', (req, res) => {
     return res.status(403).type('text/plain').send('Destino no permitido');
   }
 
+  if (deviceId) {
+    killDeviceLiveProxy(deviceId);
+    killDeviceFfmpeg(deviceId);
+  }
+
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
-    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    '-fflags', '+genpts+discardcorrupt',
+    '-i', targetUrl,
+    '-map', '0:V:0?',
+    '-map', '0:a:0?',
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-tune', 'zerolatency',
+    '-vf', "scale='min(1280,iw)':-2,format=yuv420p",
+    '-g', '30',
+    '-b:v', '2200k',
+    '-maxrate', '2500k',
+    '-bufsize', '5000k',
+    '-c:a', 'aac',
+    '-ac', '2',
+    '-ar', '48000',
+    '-b:a', '128k',
+    '-f', 'mpegts',
+    'pipe:1'
+  ];
+
+  res.writeHead(200, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': '*',
+    'Content-Type': 'video/mp2t',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Connection': 'close',
+    'X-Accel-Buffering': 'no'
+  });
+
+  if (res.socket) res.socket.setNoDelay(true);
+
+  const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+  proc.stdout.pipe(res);
+
+  const killProc = () => {
+    try { proc.kill('SIGKILL'); } catch (_) {}
+  };
+
+  if (deviceId) {
+    activeDeviceFfmpeg.set(deviceId, killProc);
+  }
+
+  res.on('close', () => {
+    killProc();
+    if (deviceId && activeDeviceFfmpeg.get(deviceId) === killProc) {
+      activeDeviceFfmpeg.delete(deviceId);
+    }
+  });
+  proc.on('error', killProc);
+});
+
+// 9D. STREAMING UNIVERSAL REMUX MATROSKA CON FFMPEG (CAMBIO DE PISTA DE AUDIO DUAL / AC3 / COMPATIBILIDAD 4K)
+app.get('/api/media/stream', (req, res) => {
+  const targetUrl = (req.query.url || '').toString().trim();
+  const deviceId = (req.query.deviceId || '').toString().trim();
+  const audioTrack = Math.max(0, parseInt(req.query.audioTrack || '0', 10) || 0);
+  const startSec = Math.max(0, parseFloat(req.query.start || '0') || 0);
+  const transcodeVideo = req.query.transcodeVideo === '1';
+
+  if (!targetUrl) {
+    return res.status(400).type('text/plain').send('Falta parámetro url');
+  }
+  if (!ffmpegPath) {
+    return handleStreamProxy(req, res);
+  }
+
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(targetUrl);
+  } catch (_) {
+    return res.status(400).type('text/plain').send('URL inválida');
+  }
+  if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
+    return res.status(403).type('text/plain').send('Destino no permitido');
+  }
+
+  if (deviceId) {
+    killDeviceLiveProxy(deviceId);
+    killDeviceFfmpeg(deviceId);
+  }
+
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
@@ -1142,23 +1302,39 @@ app.get('/api/media/stream', (req, res) => {
 
   args.push(
     '-i', targetUrl,
-    '-map', '0:v:0?',
-    '-map', `0:a:${audioTrack}?`,
-    '-c:v', 'copy',
+    '-map', '0:V:0?',
+    '-map', `0:a:${audioTrack}?`
+  );
+
+  if (transcodeVideo) {
+    args.push(
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-vf', "scale='min(1280,iw)':-2,format=yuv420p",
+      '-g', '48',
+      '-b:v', '2500k',
+      '-maxrate', '2800k',
+      '-bufsize', '5600k'
+    );
+  } else {
+    args.push('-c:v', 'copy');
+  }
+
+  args.push(
     '-c:a', 'aac',
     '-ac', '2',
+    '-ar', '48000',
     '-b:a', '160k',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-    '-f', 'mp4',
+    '-f', 'matroska',
     'pipe:1'
   );
 
   res.writeHead(200, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': '*',
-    'Content-Type': 'video/mp4',
+    'Content-Type': 'video/x-matroska',
     'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Connection': 'keep-alive',
+    'Connection': 'close',
     'X-Accel-Buffering': 'no'
   });
 
@@ -1172,7 +1348,16 @@ app.get('/api/media/stream', (req, res) => {
     try { proc.kill('SIGKILL'); } catch (_) {}
   };
 
-  res.on('close', killProc);
+  if (deviceId) {
+    activeDeviceFfmpeg.set(deviceId, killProc);
+  }
+
+  res.on('close', () => {
+    killProc();
+    if (deviceId && activeDeviceFfmpeg.get(deviceId) === killProc) {
+      activeDeviceFfmpeg.delete(deviceId);
+    }
+  });
   proc.on('error', killProc);
 });
 

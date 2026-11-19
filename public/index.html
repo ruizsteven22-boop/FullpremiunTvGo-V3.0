@@ -702,10 +702,17 @@
         if (item.type === 'SERIE') {
           setSelectedSerieInfo(item);
           setSeriesEpisodes([]);
+          setActiveItem(null);
           setSeriesLoading(true);
           try {
+            fetch(`/api/media/stop?deviceId=${encodeURIComponent(deviceId)}`).catch(() => {});
             const infoUrl = `${activeServerHost}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series_info&series_id=${item.seriesId}`;
-            const data = await fetchJsonViaProxy(infoUrl);
+            let data = null;
+            try {
+              data = await fetchJsonViaProxy(infoUrl);
+            } catch (_) {
+              data = await fetchJsonViaProxy(infoUrl);
+            }
             const episodesObj = data?.episodes || {};
             const epList = [];
             const seasonKeys = Object.keys(episodesObj).sort((a, b) => Number(a) - Number(b));
@@ -731,6 +738,9 @@
             setSeriesEpisodes(epList);
             if (seasonKeys.length > 0) {
               setSelectedSeason(String(seasonKeys[0]));
+            }
+            if (epList.length > 0) {
+              setActiveItem(epList[0]);
             }
           } catch (_) {
             alert('No se pudieron obtener los capítulos.');
@@ -801,6 +811,7 @@
       const visibleItems = useMemo(() => filteredItems.slice(0, visibleLimit), [filteredItems, visibleLimit]);
 
       const handleTabChange = (newTab) => {
+        fetch(`/api/media/stop?deviceId=${encodeURIComponent(deviceId)}`).catch(() => {});
         setActiveTab(newTab);
         setSelectedCategory('ALL');
         setSearch('');
@@ -1150,7 +1161,7 @@
                   data-zone="player"
                   className="col-span-5 h-full min-h-0 flex flex-col p-3 gap-3 bg-gradient-to-b from-[#0A2246]/70 to-[#061326]/90 overflow-y-auto"
                 >
-                  <VideoPlayer item={activeItem} isLiveMode={true} />
+                  <VideoPlayer item={activeItem} isLiveMode={true} deviceId={deviceId} />
 
                   {activeItem ? (
                     <div className="p-3 rounded-2xl bg-[#07152B]/90 border border-cyan-500/25 space-y-2.5 shadow-xl">
@@ -1348,7 +1359,7 @@
                 >
                   {activeTab === 'MOVIES' ? (
                     <>
-                      <VideoPlayer item={activeItem} isLiveMode={false} />
+                      <VideoPlayer item={activeItem} isLiveMode={false} deviceId={deviceId} />
                       {activeItem ? (
                         <div className="p-3 rounded-2xl bg-[#07152B]/90 border border-cyan-500/25 space-y-2.5 shadow-xl">
                           <div className="min-w-0">
@@ -1376,27 +1387,27 @@
                         </div>
                       ) : (
                         <div className="p-4 rounded-2xl bg-[#07152B]/70 border border-cyan-500/20 text-center text-xs text-slate-300">
-                          Selecciona una película de la columna central para reproducirla y elegir idioma de audio.
+                          Selecciona una película de la columna central para reproducirla en la minipantalla y elegir idioma de audio.
                         </div>
                       )}
                     </>
                   ) : (
-                    /* PANEL DERECHO DE SERIES: REPRODUCTOR + TEMPORADAS + CAPÍTULOS */
+                    /* PANEL DERECHO DE SERIES: MINIPANTALLA SIEMPRE VISIBLE ARRIBA + TEMPORADAS + CAPÍTULOS ABAJO */
                     <>
-                      {activeItem && activeItem.type === 'EPISODE' && (
-                        <div className="space-y-2 shrink-0">
-                          <VideoPlayer item={activeItem} isLiveMode={false} />
-                          <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-xl bg-[#07152B]/90 border border-cyan-500/25">
-                            <span className="text-xs font-bold text-white truncate">{activeItem.shortTitle || activeItem.title}</span>
+                      <div className="space-y-1.5 shrink-0">
+                        <VideoPlayer item={activeItem} isLiveMode={false} deviceId={deviceId} />
+                        {activeItem && activeItem.type === 'EPISODE' && (
+                          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-[#07152B]/90 border border-cyan-500/25">
+                            <span className="text-xs font-bold text-white truncate">▶ {activeItem.shortTitle || activeItem.title}</span>
                             <button
                               onClick={triggerVideoFullscreen}
-                              className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-black text-xs shrink-0"
+                              className="px-3 py-1 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-slate-950 font-black text-xs shrink-0"
                             >
-                              ⛶ Pantalla Completa
+                              ⛶ Agrandar Pantalla
                             </button>
                           </div>
-                        </div>
-                      )}
+                        )}
+                      </div>
 
                       {selectedSerieInfo ? (
                         <div className="flex-1 min-h-0 flex flex-col bg-[#07152B]/90 border border-cyan-500/25 rounded-2xl p-2.5 gap-2">
@@ -1425,7 +1436,7 @@
                                   key={sNum}
                                   data-active={String(selectedSeason) === String(sNum) ? 'true' : 'false'}
                                   onClick={() => setSelectedSeason(String(sNum))}
-                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition ${
+                                  className={`px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition ${
                                     String(selectedSeason) === String(sNum)
                                       ? 'bg-gradient-to-r from-cyan-400 to-sky-500 text-slate-950 font-black shadow'
                                       : 'bg-slate-900/90 text-slate-300 hover:bg-cyan-500/20'
@@ -1440,11 +1451,11 @@
                           {/* LISTA DE CAPÍTULOS DE LA TEMPORADA */}
                           <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-0.5">
                             {seriesLoading ? (
-                              <div className="py-8 text-center text-xs text-cyan-300 font-bold">
+                              <div className="py-6 text-center text-xs text-cyan-300 font-bold">
                                 Cargando capítulos de la serie...
                               </div>
                             ) : currentSeasonEpisodes.length === 0 ? (
-                              <div className="py-6 text-center text-xs text-slate-400">
+                              <div className="py-4 text-center text-xs text-slate-400">
                                 No hay capítulos disponibles en esta temporada.
                               </div>
                             ) : (
@@ -1461,7 +1472,7 @@
                                         setActiveItem(ep);
                                       }
                                     }}
-                                    className={`w-full px-3 py-2 rounded-xl text-left text-xs font-bold transition flex items-center justify-between gap-2 ${
+                                    className={`w-full px-3 py-1.5 rounded-xl text-left text-xs font-bold transition flex items-center justify-between gap-2 ${
                                       isEpPlaying
                                         ? 'bg-gradient-to-r from-cyan-400 to-sky-500 text-slate-950 font-black shadow'
                                         : 'bg-slate-900/70 hover:bg-cyan-500/15 text-slate-200'
@@ -1469,7 +1480,7 @@
                                   >
                                     <span className="truncate">▶ {ep.shortTitle || ep.title}</span>
                                     <span className="text-[10px] shrink-0 opacity-85">
-                                      {isEpPlaying ? 'OK ×2 Pantalla Completa' : `T${ep.seasonNum}`}
+                                      {isEpPlaying ? 'OK ×2 Agrandar' : `T${ep.seasonNum}`}
                                     </span>
                                   </button>
                                 );
@@ -1478,8 +1489,8 @@
                           </div>
                         </div>
                       ) : (
-                        <div className="p-6 rounded-2xl bg-[#07152B]/70 border border-cyan-500/20 text-center text-xs text-slate-300">
-                          Selecciona una serie de la columna central para ver sus temporadas y capítulos.
+                        <div className="p-4 rounded-2xl bg-[#07152B]/70 border border-cyan-500/20 text-center text-xs text-slate-300">
+                          Selecciona una serie de la columna central para ver sus temporadas y reproducir en la minipantalla.
                         </div>
                       )}
                     </>
@@ -1492,17 +1503,24 @@
       );
     }
 
-    // REPRODUCTOR BLINDADO CON SOPORTE PARA FHD CONTINUO, MKV/AC3 REMUX Y CAMBIO DE PISTA DE AUDIO
-    function VideoPlayer({ item, isLiveMode }) {
+    // REPRODUCTOR UNIVERSAL SMART TV (LIVE TS + LIVE FFMPEG H264 FALLBACK + VOD NATIVO + CAMBIO DE AUDIO MATROSKA)
+    const BLACK_POSTER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=';
+
+    function VideoPlayer({ item, isLiveMode, deviceId }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
       const hlsRef = useRef(null);
       const fallbackTimerRef = useRef(null);
+      const probedItemIdRef = useRef(null);
+
       const [status, setStatus] = useState('IDLE');
       const [needsUnmute, setNeedsUnmute] = useState(false);
       const [audioTracks, setAudioTracks] = useState([]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
-      const [useTranscode, setUseTranscode] = useState(false);
+      // vodMode: 'DIRECT' (proxy nativo con Range) | 'REMUX' (FFmpeg -c:v copy -c:a aac -f matroska) | 'TRANSCODE' (FFmpeg H264 + AAC para TVs 1080p en pelis 4K/AVI)
+      const [vodMode, setVodMode] = useState('DIRECT');
+      // liveModeType: 'DIRECT_TS' (mpegts.js directo) | 'FFMPEG_TS' (FFmpeg H264+AAC MPEG-TS para canales MPEG2/MP2/AC3 como Mega SD)
+      const [liveModeType, setLiveModeType] = useState('DIRECT_TS');
 
       const cleanup = () => {
         if (fallbackTimerRef.current) {
@@ -1547,53 +1565,51 @@
         }
       };
 
-      // Detectar pistas de audio en películas y series (especialmente títulos DUAL o MKV)
+      const probeTracksInBackground = (currentItem) => {
+        if (!currentItem?.streamUrl || isLiveMode) return;
+        if (probedItemIdRef.current === currentItem.id) return;
+        probedItemIdRef.current = currentItem.id;
+
+        fetch(`/api/media/tracks?url=${encodeURIComponent(currentItem.streamUrl)}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (probedItemIdRef.current !== currentItem.id) return;
+            if (data && Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
+              setAudioTracks(data.audioTracks);
+            }
+          })
+          .catch(() => {});
+      };
+
       useEffect(() => {
+        probedItemIdRef.current = null;
         if (!item?.streamUrl) {
           setAudioTracks([]);
           setSelectedAudioTrack(0);
-          setUseTranscode(false);
+          setVodMode('DIRECT');
+          setLiveModeType('DIRECT_TS');
+          setStatus('IDLE');
           return;
         }
 
         const isDualTitle = /dual/i.test(item.title || '');
-        const isMkvOrAvi = item.ext === 'mkv' || item.ext === 'avi' || /\.(mkv|avi)(\?|$)/i.test(item.streamUrl);
+        const isAvi = item.ext === 'avi' || /\.avi(\?|$)/i.test(item.streamUrl);
 
         setSelectedAudioTrack(0);
-        setUseTranscode(Boolean(isMkvOrAvi));
+        setLiveModeType('DIRECT_TS');
+        setVodMode(isAvi ? 'TRANSCODE' : 'DIRECT');
 
-        if (!isLiveMode) {
-          if (isDualTitle) {
-            setAudioTracks([
-              { index: 0, label: 'Español / Latino (Pista 1)' },
-              { index: 1, label: 'Inglés / Original (Pista 2)' }
-            ]);
-          } else {
-            setAudioTracks([]);
-          }
-
-          let cancelled = false;
-          fetch(`/api/media/tracks?url=${encodeURIComponent(item.streamUrl)}`)
-            .then(r => r.ok ? r.json() : null)
-            .then(data => {
-              if (cancelled || !data || !Array.isArray(data.audioTracks)) return;
-              if (data.audioTracks.length > 0) {
-                setAudioTracks(data.audioTracks);
-                const firstCodec = (data.audioTracks[0]?.codec || '').toLowerCase();
-                if (['ac3', 'eac3', 'dts', 'truehd', 'flac'].includes(firstCodec)) {
-                  setUseTranscode(true);
-                }
-              }
-            })
-            .catch(() => {});
-
-          return () => { cancelled = true; };
+        if (!isLiveMode && isDualTitle) {
+          setAudioTracks([
+            { index: 0, label: 'Español / Latino (Pista 1)' },
+            { index: 1, label: 'Inglés / Original (Pista 2)' }
+          ]);
         } else {
           setAudioTracks([]);
         }
       }, [item]);
 
-      const startPlayback = (forceRemux = false, trackIndex = selectedAudioTrack) => {
+      const startPlayback = () => {
         cleanup();
         if (!item?.streamUrl || !videoRef.current) {
           setStatus('IDLE');
@@ -1606,54 +1622,23 @@
         video.muted = false;
         video.volume = 1.0;
 
-        const shouldUseRemux = forceRemux || useTranscode || trackIndex > 0;
-        const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
-        const remuxStreamUrl = `${window.location.origin}/api/media/stream?url=${encodeURIComponent(item.streamUrl)}&audioTrack=${trackIndex}`;
+        const devParam = `deviceId=${encodeURIComponent(deviceId || '')}`;
+        const directProxyUrl = `${window.location.origin}/proxy?${devParam}&url=${encodeURIComponent(item.streamUrl)}`;
 
-        if (shouldUseRemux) {
-          video.src = remuxStreamUrl;
-          video.load();
-          attemptPlay(video, video);
-          return;
-        }
+        // 1. MODO TV EN VIVO (LIVE)
+        if (isLiveMode || item.type === 'LIVE') {
+          const liveStreamUrl = liveModeType === 'FFMPEG_TS'
+            ? `${window.location.origin}/api/media/live-ts?${devParam}&url=${encodeURIComponent(item.streamUrl)}`
+            : directProxyUrl;
 
-        const isHlsStream = /\.m3u8(\?|$)/i.test(item.streamUrl);
-
-        if (isHlsStream && window.Hls && window.Hls.isSupported()) {
-          try {
-            const hls = new window.Hls({
-              enableWorker: true,
-              lowLatencyMode: Boolean(isLiveMode),
-              maxBufferLength: 20,
-              maxMaxBufferLength: 30,
-              backBufferLength: 10
-            });
-            hlsRef.current = hls;
-            hls.loadSource(directProxyUrl);
-            hls.attachMedia(video);
-            hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-              attemptPlay(video, video);
-            });
-            hls.on(window.Hls.Events.ERROR, (_, data) => {
-              if (data && data.fatal) {
-                setUseTranscode(true);
-              }
-            });
-          } catch (_) {
-            setUseTranscode(true);
-          }
-          return;
-        }
-
-        if (item.type === 'LIVE' && !isHlsStream) {
           if (window.mpegts && window.mpegts.isSupported()) {
             try {
               const player = window.mpegts.createPlayer({
                 type: 'm2ts',
                 isLive: true,
-                url: directProxyUrl
+                url: liveStreamUrl
               }, {
-                enableWorker: true,
+                enableWorker: false,
                 lazyLoad: false,
                 enableStashBuffer: false,
                 liveBufferLatencyChasing: false,
@@ -1667,34 +1652,55 @@
               player.load();
               attemptPlay(player, video);
 
-              // Fallback automático a FFmpeg Remux si el canal TS no arranca en 6 segundos
-              fallbackTimerRef.current = setTimeout(() => {
-                if (videoRef.current && videoRef.current.currentTime === 0 && !useTranscode) {
-                  setUseTranscode(true);
-                }
-              }, 6000);
+              if (liveModeType === 'DIRECT_TS') {
+                // Si el canal viene en MPEG2/MP2/AC3 (como Mega SD) y no decodifica en 6.5s, pasar a transcodificador H264+AAC en vivo
+                fallbackTimerRef.current = setTimeout(() => {
+                  if (videoRef.current && videoRef.current.readyState < 2) {
+                    setLiveModeType('FFMPEG_TS');
+                  }
+                }, 6500);
+              }
 
-              player.on(window.mpegts.Events.ERROR, () => {
-                if (video.currentTime > 0) return;
-                setUseTranscode(true);
+              player.on(window.mpegts.Events.ERROR, (errType) => {
+                if (video.currentTime > 0 && video.readyState >= 2) return;
+                if (liveModeType === 'DIRECT_TS') {
+                  setLiveModeType('FFMPEG_TS');
+                } else if (errType === window.mpegts.ErrorTypes.NETWORK_ERROR) {
+                  setStatus('ERROR');
+                }
               });
             } catch (_) {
-              setUseTranscode(true);
+              if (liveModeType === 'DIRECT_TS') setLiveModeType('FFMPEG_TS');
+              else setStatus('ERROR');
             }
           } else {
-            setUseTranscode(true);
+            video.src = liveStreamUrl;
+            video.load();
+            attemptPlay(video, video);
           }
-        } else {
-          video.src = directProxyUrl;
-          video.load();
-          attemptPlay(video, video);
+          return;
+        }
 
-          // Fallback automático a FFmpeg Remux si la película MP4/MKV no arranca en 5.5 segundos
+        // 2. MODO CINE Y SERIES (VOD)
+        let targetVodUrl = directProxyUrl;
+        if (vodMode === 'REMUX' || selectedAudioTrack > 0) {
+          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(item.streamUrl)}&audioTrack=${selectedAudioTrack}`;
+        } else if (vodMode === 'TRANSCODE') {
+          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(item.streamUrl)}&audioTrack=${selectedAudioTrack}&transcodeVideo=1`;
+        }
+
+        video.src = targetVodUrl;
+        video.load();
+        attemptPlay(video, video);
+
+        // Si en modo directo un archivo MKV/4K/AC3 no decodifica en 7 segundos en este TV, pasar a REMUX/TRANSCODE automáticamente
+        if (vodMode === 'DIRECT' && selectedAudioTrack === 0) {
           fallbackTimerRef.current = setTimeout(() => {
-            if (videoRef.current && videoRef.current.currentTime === 0 && !useTranscode) {
-              setUseTranscode(true);
+            if (videoRef.current && videoRef.current.readyState < 2) {
+              const is4k = /4k|2160p/i.test(item.title || '') || /4k/i.test(item.categoryName || '');
+              setVodMode(is4k ? 'TRANSCODE' : 'REMUX');
             }
-          }, 5500);
+          }, 7000);
         }
       };
 
@@ -1703,6 +1709,14 @@
         if (!video) return;
 
         const handlePlaying = () => {
+          if (fallbackTimerRef.current) {
+            clearTimeout(fallbackTimerRef.current);
+            fallbackTimerRef.current = null;
+          }
+          setStatus('PLAYING');
+          probeTracksInBackground(item);
+        };
+        const handleCanPlay = () => {
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
@@ -1719,15 +1733,27 @@
           }
         };
         const handleError = () => {
-          if (!video.getAttribute('src')) return;
-          if (!useTranscode) {
-            setUseTranscode(true);
+          if (!video.getAttribute('src') && !playerRef.current) return;
+          if (isLiveMode || item?.type === 'LIVE') {
+            if (liveModeType === 'DIRECT_TS') {
+              setLiveModeType('FFMPEG_TS');
+            } else {
+              setStatus('ERROR');
+            }
           } else {
-            setStatus('ERROR');
+            if (vodMode === 'DIRECT') {
+              const is4k = /4k|2160p/i.test(item?.title || '') || /4k/i.test(item?.categoryName || '');
+              setVodMode(is4k ? 'TRANSCODE' : 'REMUX');
+            } else if (vodMode === 'REMUX') {
+              setVodMode('TRANSCODE');
+            } else {
+              setStatus('ERROR');
+            }
           }
         };
 
         video.addEventListener('playing', handlePlaying);
+        video.addEventListener('canplay', handleCanPlay);
         video.addEventListener('timeupdate', handleTimeUpdate);
         video.addEventListener('error', handleError);
 
@@ -1737,21 +1763,26 @@
 
         return () => {
           video.removeEventListener('playing', handlePlaying);
+          video.removeEventListener('canplay', handleCanPlay);
           video.removeEventListener('timeupdate', handleTimeUpdate);
           video.removeEventListener('error', handleError);
           window.removeEventListener('pagehide', handleUnload);
           window.removeEventListener('beforeunload', handleUnload);
         };
-      }, [useTranscode]);
+      }, [item, vodMode, liveModeType]);
 
       useEffect(() => {
-        startPlayback(useTranscode, selectedAudioTrack);
+        startPlayback();
         return () => cleanup();
-      }, [item, useTranscode, selectedAudioTrack]);
+      }, [item, vodMode, liveModeType, selectedAudioTrack]);
 
       const handleSelectAudioTrack = (idx) => {
         setSelectedAudioTrack(idx);
-        setUseTranscode(true);
+        if (idx === 0 && vodMode === 'REMUX') {
+          setVodMode('DIRECT');
+        } else if (idx > 0 && vodMode === 'DIRECT') {
+          setVodMode('REMUX');
+        }
       };
 
       const handleUnmute = () => {
@@ -1769,12 +1800,24 @@
             <div className="relative aspect-video bg-black flex items-center justify-center">
               <video
                 ref={videoRef}
+                poster={BLACK_POSTER}
                 controls={!isLiveMode}
                 playsInline
                 autoPlay
-                className="w-full h-full object-contain cursor-pointer"
+                className="w-full h-full object-contain cursor-pointer bg-black"
                 onClick={handleUnmute}
               />
+
+              {!item && (
+                <div className="absolute inset-0 bg-[#050C1A] flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+                  <div className="w-10 h-10 rounded-2xl bg-cyan-500/15 border border-cyan-400/30 flex items-center justify-center text-cyan-300 font-black text-sm mb-2">
+                    TV
+                  </div>
+                  <span className="text-xs text-slate-300 font-bold">
+                    {isLiveMode ? 'Selecciona un canal para ver en la minipantalla' : 'Selecciona un título o capítulo para reproducir aquí'}
+                  </span>
+                </div>
+              )}
 
               {needsUnmute && (
                 <button
@@ -1785,21 +1828,25 @@
                 </button>
               )}
 
-              {status === 'LOADING' && (
-                <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center pointer-events-none">
+              {item && status === 'LOADING' && (
+                <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center pointer-events-none">
                   <div className="w-9 h-9 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin mb-2"></div>
                   <span className="text-xs text-cyan-300 font-bold">
-                    {useTranscode ? 'Optimizando audio y video...' : 'Conectando señal...'}
+                    {(liveModeType === 'FFMPEG_TS' || vodMode !== 'DIRECT') ? 'Adaptando señal para tu Smart TV...' : 'Conectando señal...'}
                   </span>
                 </div>
               )}
 
-              {status === 'ERROR' && (
+              {item && status === 'ERROR' && (
                 <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-4 text-center space-y-2.5 z-10">
                   <p className="text-amber-400 font-bold text-xs">Señal temporalmente no disponible</p>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => startPlayback(true, selectedAudioTrack)}
+                      onClick={() => {
+                        if (isLiveMode || item?.type === 'LIVE') setLiveModeType('FFMPEG_TS');
+                        else setVodMode('TRANSCODE');
+                        startPlayback();
+                      }}
                       className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-black shadow-xl"
                     >
                       🔄 Reconectar (Modo Compatible)

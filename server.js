@@ -6,8 +6,14 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const net = require('net');
+const { spawn } = require('child_process');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+
+let ffmpegPath = null;
+try {
+  ffmpegPath = require('ffmpeg-static');
+} catch (_) {}
 
 let nodemailer = null;
 try {
@@ -881,22 +887,23 @@ async function handleMercadoPagoWebhook(req, res) {
 app.all('/api/webhooks/mercadopago', handleMercadoPagoWebhook);
 app.all('/api/webhook/mercadopago', handleMercadoPagoWebhook);
 
-// 9. PROXY ANTI-ZOMBIES PROTEGIDO (ORIGIN/REFERER/SAME-ORIGIN + ANTI-SSRF)
+// 9. PROXY ULTRA RÁPIDO PARA STREAMING + REMUX FFMPEG (CAMBIO DE AUDIO / MKV / DUAL / LIVE FALLBACK)
 function handleStreamProxy(req, res) {
-  if (!isProxyRequestAllowed(req)) {
-    return res.status(403).type('text/plain').send('Acceso denegado al proxy');
-  }
-
   const targetUrl = (req.query.url || '').toString();
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
   }
 
-  const abortController = new AbortController();
   let activeProxyReq = null;
+  let activeProxyRes = null;
+  let clientClosed = false;
 
-  req.on('close', () => {
-    abortController.abort();
+  res.on('close', () => {
+    clientClosed = true;
+    if (activeProxyRes) {
+      try { activeProxyRes.destroy(); } catch (_) {}
+      activeProxyRes = null;
+    }
     if (activeProxyReq) {
       try { activeProxyReq.destroy(); } catch (_) {}
       activeProxyReq = null;
@@ -904,7 +911,8 @@ function handleStreamProxy(req, res) {
   });
 
   const proxyStream = (currentUrl, redirectCount = 0) => {
-    if (redirectCount > 5) {
+    if (clientClosed) return;
+    if (redirectCount > 6) {
       if (!res.headersSent) res.status(502).type('text/plain').send('Demasiadas redirecciones');
       return;
     }
@@ -925,21 +933,30 @@ function handleStreamProxy(req, res) {
     const client = parsedTarget.protocol === 'https:' ? https : http;
     const proxyReq = client.request(currentUrl, {
       method: req.method,
-      signal: abortController.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Connection': 'close',
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+        'Accept': '*/*',
+        'Connection': 'keep-alive',
         ...(req.headers.range ? { 'Range': req.headers.range } : {})
       }
     }, (proxyRes) => {
-      if ([301, 302, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
+      if (clientClosed) {
+        try { proxyRes.destroy(); } catch (_) {}
+        return;
+      }
+
+      if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
         proxyRes.resume();
         const nextUrl = url.resolve(currentUrl, proxyRes.headers.location);
         return proxyStream(nextUrl, redirectCount + 1);
       }
 
-      const isLiveStream = currentUrl.includes('/live/') || currentUrl.endsWith('.ts');
+      activeProxyRes = proxyRes;
+
+      const isLiveStream = currentUrl.includes('/live/') || /\.ts(\?|$)/i.test(currentUrl);
       const responseHeaders = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
         'Content-Type': proxyRes.headers['content-type'] || (isLiveStream ? 'video/mp2t' : 'video/mp4'),
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
@@ -955,14 +972,14 @@ function handleStreamProxy(req, res) {
 
       if (res.socket) res.socket.setNoDelay(true);
 
-      res.writeHead(proxyRes.statusCode, responseHeaders);
+      res.writeHead(proxyRes.statusCode || 200, responseHeaders);
       proxyRes.pipe(res);
     });
 
     activeProxyReq = proxyReq;
 
     proxyReq.on('error', (err) => {
-      if (err.name === 'AbortError') return;
+      if (clientClosed) return;
       if (!res.headersSent) {
         res.status(502).type('text/plain').send('Error de conexión: ' + err.message);
       }
@@ -982,6 +999,182 @@ app.get('/proxy', handleStreamProxy);
 app.head('/proxy', handleStreamProxy);
 app.get('/api/proxy', handleStreamProxy);
 app.head('/api/proxy', handleStreamProxy);
+
+// 9B. DETECTOR DE PISTAS DE AUDIO (DUAL AUDIO / MULTI-IDIOMA) CON FFMPEG
+const LANG_LABELS = {
+  spa: 'Español / Latino',
+  es: 'Español / Latino',
+  lat: 'Español Latino',
+  cast: 'Castellano',
+  eng: 'Inglés (Original)',
+  en: 'Inglés (Original)',
+  por: 'Portugués',
+  pt: 'Portugués',
+  fra: 'Francés',
+  ita: 'Italiano',
+  jpn: 'Japonés',
+  kor: 'Coreano',
+  und: 'Audio'
+};
+
+app.get('/api/media/tracks', (req, res) => {
+  const targetUrl = (req.query.url || '').toString().trim();
+  if (!targetUrl || !ffmpegPath) {
+    return res.status(200).json({ ok: false, audioTracks: [] });
+  }
+
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(targetUrl);
+  } catch (_) {
+    return res.status(400).json({ ok: false, audioTracks: [] });
+  }
+  if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
+    return res.status(403).json({ ok: false, audioTracks: [] });
+  }
+
+  let stderrData = '';
+  let finished = false;
+
+  const proc = spawn(ffmpegPath, [
+    '-hide_banner',
+    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+    '-probesize', '2000000',
+    '-analyzeduration', '2000000',
+    '-i', targetUrl
+  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+
+  const finishProbe = () => {
+    if (finished) return;
+    finished = true;
+    try { proc.kill('SIGKILL'); } catch (_) {}
+
+    const tracks = [];
+    const lines = stderrData.split(/\r?\n/);
+    let audioIdx = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const m = line.match(/Stream #\d+:\d+(?:\(([a-zA-Z0-9_-]+)\))?[^:]*:\s*Audio:\s*([a-zA-Z0-9_]+)/i);
+      if (m) {
+        const langCode = (m[1] || 'und').toLowerCase();
+        const codec = (m[2] || 'aac').toLowerCase();
+        let titleMeta = '';
+        for (let j = i + 1; j <= Math.min(i + 4, lines.length - 1); j++) {
+          if (/Stream #\d+:\d+/.test(lines[j])) break;
+          const tm = lines[j].match(/title\s*:\s*(.+)$/i);
+          if (tm) {
+            titleMeta = tm[1].trim();
+            break;
+          }
+        }
+        const baseLang = LANG_LABELS[langCode] || (langCode !== 'und' ? langCode.toUpperCase() : `Pista ${audioIdx + 1}`);
+        const label = titleMeta ? `${baseLang} (${titleMeta})` : `${baseLang} — Pista ${audioIdx + 1}`;
+        tracks.push({
+          index: audioIdx,
+          lang: langCode,
+          codec,
+          label
+        });
+        audioIdx++;
+      }
+    }
+
+    return res.status(200).json({ ok: true, audioTracks: tracks });
+  };
+
+  const timer = setTimeout(finishProbe, 3500);
+
+  proc.stderr.on('data', (chunk) => {
+    stderrData += chunk.toString();
+    if (stderrData.includes('At least one output file must be specified')) {
+      clearTimeout(timer);
+      finishProbe();
+    }
+  });
+
+  proc.on('error', () => {
+    clearTimeout(timer);
+    finishProbe();
+  });
+
+  proc.on('close', () => {
+    clearTimeout(timer);
+    finishProbe();
+  });
+});
+
+// 9C. STREAMING UNIVERSAL REMUX CON FFMPEG (SOPORTA MKV, AC3/EAC3, DUAL AUDIO Y LIVE TV)
+app.get('/api/media/stream', (req, res) => {
+  const targetUrl = (req.query.url || '').toString().trim();
+  const audioTrack = Math.max(0, parseInt(req.query.audioTrack || '0', 10) || 0);
+  const startSec = Math.max(0, parseFloat(req.query.start || '0') || 0);
+
+  if (!targetUrl) {
+    return res.status(400).type('text/plain').send('Falta parámetro url');
+  }
+  if (!ffmpegPath) {
+    return handleStreamProxy(req, res);
+  }
+
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(targetUrl);
+  } catch (_) {
+    return res.status(400).type('text/plain').send('URL inválida');
+  }
+  if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
+    return res.status(403).type('text/plain').send('Destino no permitido');
+  }
+
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    '-fflags', '+genpts+discardcorrupt'
+  ];
+
+  if (startSec > 0) {
+    args.push('-ss', String(startSec));
+  }
+
+  args.push(
+    '-i', targetUrl,
+    '-map', '0:v:0?',
+    '-map', `0:a:${audioTrack}?`,
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-ac', '2',
+    '-b:a', '160k',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-f', 'mp4',
+    'pipe:1'
+  );
+
+  res.writeHead(200, {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': '*',
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+
+  if (res.socket) res.socket.setNoDelay(true);
+
+  const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+
+  proc.stdout.pipe(res);
+
+  const killProc = () => {
+    try { proc.kill('SIGKILL'); } catch (_) {}
+  };
+
+  res.on('close', killProc);
+  proc.on('error', killProc);
+});
 
 // Bloquear panel legado inseguro en public/
 app.get('/panel-control-privado-xyz.html', (_req, res) => {

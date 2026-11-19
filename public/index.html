@@ -13,6 +13,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -25,6 +26,18 @@
     ::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.8); }
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    button:focus,
+    button:focus-visible,
+    a:focus,
+    a:focus-visible,
+    input:focus,
+    input:focus-visible,
+    [tabindex="0"]:focus,
+    [tabindex="0"]:focus-visible {
+      outline: 3px solid #a78bfa !important;
+      outline-offset: 2px;
+      box-shadow: 0 0 0 5px rgba(139, 92, 246, 0.35) !important;
+    }
   </style>
 </head>
 <body class="bg-[#060811] text-slate-100 min-h-screen selection:bg-violet-600 selection:text-white antialiased">
@@ -36,13 +49,74 @@
     const OFFICIAL_SERVER_HOST = 'http://st.xn--aejo-gqa.de:80';
 
     function getOrCreateDeviceId() {
-      let id = localStorage.getItem('tvgo_device_id');
-      if (!id) {
-        const rand = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+      let id = '';
+      try {
+        id = localStorage.getItem('tvgo_device_id') || '';
+      } catch (_) {}
+      if (!/^TVGO-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(id)) {
+        const rand = () => Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
         id = `TVGO-${rand()}-${rand()}`;
-        localStorage.setItem('tvgo_device_id', id);
+        try {
+          localStorage.setItem('tvgo_device_id', id);
+        } catch (_) {}
       }
       return id;
+    }
+
+    function moveDpadFocus(direction) {
+      const selector = 'button:not(:disabled), a[href], input:not(:disabled), [tabindex="0"]';
+      const candidates = Array.from(document.querySelectorAll(selector)).filter((el) => {
+        if (el.offsetParent === null) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      if (candidates.length === 0) return false;
+
+      const active = document.activeElement;
+      if (!active || active === document.body || !candidates.includes(active)) {
+        candidates[0].focus();
+        candidates[0].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return true;
+      }
+
+      const cur = active.getBoundingClientRect();
+      const cx = cur.left + cur.width / 2;
+      const cy = cur.top + cur.height / 2;
+
+      let best = null;
+      let bestScore = Infinity;
+
+      for (const el of candidates) {
+        if (el === active) continue;
+        const r = el.getBoundingClientRect();
+        const ex = r.left + r.width / 2;
+        const ey = r.top + r.height / 2;
+        const dx = ex - cx;
+        const dy = ey - cy;
+
+        let valid = false;
+        let primary = 0;
+        let secondary = 0;
+
+        if (direction === 37 && dx < -4) { valid = true; primary = -dx; secondary = Math.abs(dy); }
+        else if (direction === 39 && dx > 4) { valid = true; primary = dx; secondary = Math.abs(dy); }
+        else if (direction === 38 && dy < -4) { valid = true; primary = -dy; secondary = Math.abs(dx); }
+        else if (direction === 40 && dy > 4) { valid = true; primary = dy; secondary = Math.abs(dx); }
+
+        if (!valid) continue;
+        const score = primary + secondary * 2.2;
+        if (score < bestScore) {
+          bestScore = score;
+          best = el;
+        }
+      }
+
+      if (best) {
+        best.focus();
+        best.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return true;
+      }
+      return false;
     }
 
     function extractXtreamFromUrl(rawUrl) {
@@ -62,7 +136,72 @@
       return null;
     }
 
+    function detectTvPlatform() {
+      try {
+        if (window.AndroidTvBridge) return 'ANDROID_TV';
+        if (typeof window.tizen !== 'undefined') return 'SAMSUNG_TIZEN';
+        if (typeof window.webOS !== 'undefined') return 'LG_WEBOS';
+        const ua = navigator.userAgent || '';
+        if (/Tizen/i.test(ua)) return 'SAMSUNG_TIZEN';
+        if (/Web0S|webOS/i.test(ua)) return 'LG_WEBOS';
+        if (/Android TV|GoogleTV|AFT[A-Z0-9]+|SmartTV|BRAVIA/i.test(ua)) return 'ANDROID_TV';
+      } catch (_) {}
+      return 'WEB';
+    }
+
+    function registerTizenRemoteKeys() {
+      try {
+        if (window.tizen && window.tizen.tvinputdevice && typeof window.tizen.tvinputdevice.registerKey === 'function') {
+          const keys = [
+            'MediaPlay', 'MediaPause', 'MediaPlayPause', 'MediaStop',
+            'MediaRewind', 'MediaFastForward', 'ChannelUp', 'ChannelDown',
+            'ColorF0Red', 'ColorF1Green', 'ColorF2Yellow', 'ColorF3Blue'
+          ];
+          keys.forEach((k) => {
+            try { window.tizen.tvinputdevice.registerKey(k); } catch (_) {}
+          });
+        }
+      } catch (_) {}
+    }
+
+    function exitTvApp() {
+      try {
+        if (window.AndroidTvBridge && typeof window.AndroidTvBridge.exitApp === 'function') {
+          window.AndroidTvBridge.exitApp();
+          return true;
+        }
+      } catch (_) {}
+      try {
+        if (window.tizen && window.tizen.application && typeof window.tizen.application.getCurrentApplication === 'function') {
+          window.tizen.application.getCurrentApplication().exit();
+          return true;
+        }
+      } catch (_) {}
+      try {
+        if (window.webOS && typeof window.webOS.platformBack === 'function') {
+          window.webOS.platformBack();
+          return true;
+        }
+      } catch (_) {}
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'TVGO_EXIT_APP' }, '*');
+          return true;
+        }
+      } catch (_) {}
+      try {
+        const platform = detectTvPlatform();
+        if (platform === 'LG_WEBOS' || platform === 'SAMSUNG_TIZEN') {
+          window.close();
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+
     function App() {
+      const [tvPlatform] = useState(detectTvPlatform);
+      const isSmartTv = tvPlatform !== 'WEB';
       const [deviceId] = useState(getOrCreateDeviceId);
       const [devicePin, setDevicePin] = useState(() => localStorage.getItem('tvgo_device_pin') || '----');
       const [deviceAccess, setDeviceAccess] = useState({ allowed: true, status: 'TRIAL', daysLeft: 12 });
@@ -211,6 +350,9 @@
         }
       };
 
+      const authRef = useRef(auth);
+      useEffect(() => { authRef.current = auth; }, [auth]);
+
       const syncWithServer = async (autoConnect = true) => {
         try {
           const res = await fetch('/api/device/init', {
@@ -223,7 +365,13 @@
             setDevicePin(data.devicePin);
             localStorage.setItem('tvgo_device_pin', data.devicePin);
           }
-          if (data.access) setDeviceAccess(data.access);
+          if (data.access) {
+            setDeviceAccess(data.access);
+            if (!data.access.allowed) {
+              setActiveItem(null);
+              setAuth(false);
+            }
+          }
 
           if (data.adminNotice?.active && data.adminNotice?.text) {
             setAdminNotice(data.adminNotice);
@@ -232,20 +380,145 @@
             setAdminNotice(null);
           }
 
-          if (data.playlist && autoConnect && !auth) {
+          if (data.playlist && data.access?.allowed !== false && autoConnect && !authRef.current) {
             connectWithPlaylist(data.playlist);
           }
         } catch (_) {}
       };
 
       useEffect(() => {
+        registerTizenRemoteKeys();
         syncWithServer(true);
         // Polling cada 30 segundos para recibir mensajes o cambios de lista remotos
         const interval = setInterval(() => {
           syncWithServer(false);
         }, 30000);
         return () => clearInterval(interval);
-      }, [auth]);
+      }, []);
+
+      const filteredItemsRef = useRef([]);
+
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          const keyCode = e.keyCode || e.which;
+          const activeEl = document.activeElement;
+          const isInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+
+          const isBackKey = (
+            keyCode === 4 ||
+            keyCode === 461 ||
+            keyCode === 10009 ||
+            keyCode === 27 ||
+            (keyCode === 8 && !isInput) ||
+            e.key === 'Escape' ||
+            e.key === 'GoBack' ||
+            e.key === 'BrowserBack'
+          );
+
+          if (isBackKey) {
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+              e.preventDefault();
+              if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+              else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+              return;
+            }
+            if (adminNotice && !dismissedNotice) {
+              e.preventDefault();
+              setDismissedNotice(true);
+              return;
+            }
+            if (activeItem) {
+              e.preventDefault();
+              setActiveItem(null);
+              return;
+            }
+            if (selectedSerieInfo) {
+              e.preventDefault();
+              setSelectedSerieInfo(null);
+              setSeriesEpisodes([]);
+              return;
+            }
+            if (auth && activeTab !== 'LIVE') {
+              e.preventDefault();
+              handleTabChange('LIVE');
+              return;
+            }
+            if (exitTvApp()) {
+              e.preventDefault();
+            }
+            return;
+          }
+
+          // Teclas multimedia Smart TV (Samsung Tizen, LG webOS, Google TV)
+          const activeVideo = document.querySelector('video');
+          if (activeVideo && !isInput) {
+            if (keyCode === 415 || e.key === 'MediaPlay') {
+              e.preventDefault();
+              activeVideo.play().catch(() => {});
+              return;
+            }
+            if (keyCode === 19 || e.key === 'MediaPause') {
+              e.preventDefault();
+              activeVideo.pause();
+              return;
+            }
+            if (keyCode === 179 || keyCode === 10252 || e.key === 'MediaPlayPause') {
+              e.preventDefault();
+              if (activeVideo.paused) activeVideo.play().catch(() => {});
+              else activeVideo.pause();
+              return;
+            }
+            if (keyCode === 413 || e.key === 'MediaStop') {
+              e.preventDefault();
+              setActiveItem(null);
+              return;
+            }
+            if (keyCode === 406 || e.key === 'f' || e.key === 'F') {
+              e.preventDefault();
+              const container = activeVideo.parentElement || activeVideo;
+              if (document.fullscreenElement || document.webkitFullscreenElement) {
+                if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+              } else if (container.requestFullscreen) {
+                container.requestFullscreen().catch(() => {});
+              } else if (container.webkitRequestFullscreen) {
+                container.webkitRequestFullscreen();
+              }
+              return;
+            }
+          }
+
+          // Cambio rápido de canal (Channel Up / Down o PageUp / PageDown) en TV en Vivo
+          if (auth && activeTab === 'LIVE' && !isInput && (keyCode === 427 || keyCode === 428 || keyCode === 33 || keyCode === 34)) {
+            const list = filteredItemsRef.current || [];
+            if (list.length > 0) {
+              e.preventDefault();
+              const curIdx = activeItem ? list.findIndex((it) => it.id === activeItem.id) : -1;
+              const isNext = (keyCode === 427 || keyCode === 33);
+              const nextIdx = curIdx < 0 ? 0 : (isNext ? (curIdx + 1) % list.length : (curIdx - 1 + list.length) % list.length);
+              setActiveItem(list[nextIdx]);
+              return;
+            }
+          }
+
+          if (keyCode >= 37 && keyCode <= 40) {
+            if (isInput && (keyCode === 37 || keyCode === 39)) return;
+            e.preventDefault();
+            moveDpadFocus(keyCode);
+            return;
+          }
+
+          if (keyCode === 13 && activeEl && !isInput) {
+            if (activeEl.tagName === 'DIV' || activeEl.getAttribute('tabindex') === '0') {
+              e.preventDefault();
+              activeEl.click();
+            }
+          }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [adminNotice, dismissedNotice, activeItem, selectedSerieInfo, auth, activeTab]);
 
       const toggleFavorite = (itemId, e) => {
         if (e) e.stopPropagation();
@@ -323,6 +596,10 @@
         return list;
       }, [currentCatalog, currentTabFavorites, selectedCategory, search]);
 
+      useEffect(() => {
+        filteredItemsRef.current = filteredItems;
+      }, [filteredItems]);
+
       const visibleItems = useMemo(() => filteredItems.slice(0, visibleLimit), [filteredItems, visibleLimit]);
 
       const handleTabChange = (newTab) => {
@@ -371,7 +648,8 @@
             <div className="flex items-center gap-2.5">
               <a
                 href="/client.html"
-                target="_blank"
+                target={isSmartTv ? undefined : "_blank"}
+                rel={isSmartTv ? undefined : "noopener noreferrer"}
                 className="px-3.5 py-2 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/40 text-violet-300 text-xs font-bold transition flex items-center gap-1.5"
               >
                 <span>📱</span> Portal de Gestión / Reseller
@@ -406,7 +684,45 @@
 
           {/* CUERPO PRINCIPAL */}
           <main className="flex-1 w-full max-w-[1850px] mx-auto p-3 sm:p-5">
-            {!auth ? (
+            {!deviceAccess.allowed ? (
+              <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-rose-500/40 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6 text-center">
+                <div className="w-14 h-14 bg-rose-600/20 border border-rose-500/40 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto text-rose-400">
+                  🔒
+                </div>
+                <div className="space-y-2">
+                  <h2 className="text-2xl font-black text-white">
+                    {deviceAccess.status === 'BLOCKED_ADMIN' ? 'Pantalla Bloqueada' : 'Periodo de Prueba Finalizado'}
+                  </h2>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    {deviceAccess.reason || 'Activa tu licencia anual (365 días) para continuar disfrutando de Full Premium TvGo.'}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
+                    <span className="text-[11px] font-extrabold uppercase text-slate-400">ID de esta Pantalla</span>
+                    <div className="text-lg font-mono font-black text-violet-400 select-all tracking-wider">{deviceId}</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-center space-y-1">
+                    <span className="text-[11px] font-extrabold uppercase text-slate-400">Tu Clave PIN Fijo</span>
+                    <div className="text-2xl font-mono font-black text-emerald-400 tracking-widest">{devicePin}</div>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs text-slate-300 space-y-1">
+                  <div>Ingresa a <strong className="text-violet-300">app.fullpremiumtvcl.com/client.html</strong> con tu ID y PIN para activar tu año.</div>
+                  <div className="text-[11px] text-slate-400">Soporte: WhatsApp <strong>+56979429123</strong> | <strong>activations@app.fullpremiumtvcl.com</strong></div>
+                </div>
+
+                <button
+                  onClick={() => syncWithServer(true)}
+                  disabled={loading}
+                  className="w-full py-4 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 text-white font-black text-sm shadow-xl transition flex items-center justify-center gap-2"
+                >
+                  <span>🔄</span> {loading ? loadingStatus : 'Verificar Activación'}
+                </button>
+              </div>
+            ) : !auth ? (
               <div className="max-w-2xl mx-auto mt-8 bg-[#0A0D1A] border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6">
                 <div className="text-center space-y-2">
                   <div className="w-14 h-14 bg-gradient-to-tr from-violet-600 to-indigo-600 rounded-2xl flex items-center justify-center font-black text-2xl mx-auto shadow-lg shadow-violet-600/30">
@@ -448,6 +764,10 @@
                 >
                   <span>🔄</span> {loading ? loadingStatus : 'Sincronizar y Entrar'}
                 </button>
+
+                <div className="text-center text-[11px] text-slate-400 pt-1">
+                  Soporte: WhatsApp <strong className="text-slate-200">+56979429123</strong> | <strong className="text-slate-200">activations@app.fullpremiumtvcl.com</strong>
+                </div>
               </div>
             ) : activeTab === 'LIVE' ? (
               /* REPRODUCTOR DE TV EN VIVO (3 COLUMNAS) */
@@ -517,6 +837,7 @@
                         <div
                           key={item.id}
                           id={`item-${idx}`}
+                          tabIndex={0}
                           onClick={() => { setFocusedIndex(idx); handleSelectItem(item); }}
                           className={`p-2.5 rounded-2xl cursor-pointer transition flex items-center justify-between gap-3 ${
                             isSelected ? 'bg-violet-600/30 border border-violet-500/70 shadow-lg text-white' : 'hover:bg-slate-800/40 text-slate-300'
@@ -706,6 +1027,7 @@
                     {visibleItems.map(item => (
                       <div
                         key={item.id}
+                        tabIndex={0}
                         onClick={() => handleSelectItem(item)}
                         className="group relative rounded-2xl overflow-hidden cursor-pointer border border-slate-800/80 bg-slate-900 transition hover:-translate-y-1.5 hover:shadow-2xl hover:border-violet-500/80"
                       >
@@ -740,14 +1062,28 @@
       );
     }
 
-    // REPRODUCTOR BLINDADO CON SOPORTE PARA FHD CONTINUO
+    // REPRODUCTOR BLINDADO CON SOPORTE PARA FHD CONTINUO Y LIMPIEZA ESTRICTA DE RAM
     function VideoPlayer({ item, isLiveMode }) {
       const videoRef = useRef(null);
       const playerRef = useRef(null);
+      const hlsRef = useRef(null);
+      const errorTimerRef = useRef(null);
       const [status, setStatus] = useState('IDLE');
       const [needsUnmute, setNeedsUnmute] = useState(false);
 
       const cleanup = () => {
+        if (errorTimerRef.current) {
+          clearTimeout(errorTimerRef.current);
+          errorTimerRef.current = null;
+        }
+        if (hlsRef.current) {
+          try {
+            hlsRef.current.stopLoad();
+            hlsRef.current.detachMedia();
+            hlsRef.current.destroy();
+          } catch (_) {}
+          hlsRef.current = null;
+        }
         if (playerRef.current) {
           try {
             playerRef.current.pause();
@@ -766,9 +1102,24 @@
         }
       };
 
+      const attemptPlay = (target, video) => {
+        const p = target.play();
+        if (p && p.catch) {
+          p.catch(() => {
+            video.muted = true;
+            setNeedsUnmute(true);
+            const p2 = target.play();
+            if (p2 && p2.catch) p2.catch(() => {});
+          });
+        }
+      };
+
       const startPlayback = () => {
-        if (!item?.streamUrl || !videoRef.current) return;
         cleanup();
+        if (!item?.streamUrl || !videoRef.current) {
+          setStatus('IDLE');
+          return;
+        }
         setStatus('LOADING');
         setNeedsUnmute(false);
 
@@ -777,8 +1128,35 @@
         video.volume = 1.0;
 
         const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(item.streamUrl)}`;
+        const isHlsStream = /\.m3u8(\?|$)/i.test(item.streamUrl);
 
-        if (item.type === 'LIVE') {
+        if (isHlsStream && window.Hls && window.Hls.isSupported()) {
+          try {
+            const hls = new window.Hls({
+              enableWorker: true,
+              lowLatencyMode: Boolean(isLiveMode),
+              maxBufferLength: 20,
+              maxMaxBufferLength: 30,
+              backBufferLength: 10
+            });
+            hlsRef.current = hls;
+            hls.loadSource(directProxyUrl);
+            hls.attachMedia(video);
+            hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+              attemptPlay(video, video);
+            });
+            hls.on(window.Hls.Events.ERROR, (_, data) => {
+              if (data && data.fatal) {
+                setStatus('ERROR');
+              }
+            });
+          } catch (_) {
+            setStatus('ERROR');
+          }
+          return;
+        }
+
+        if (item.type === 'LIVE' && !isHlsStream) {
           if (window.mpegts && window.mpegts.isSupported()) {
             try {
               const player = window.mpegts.createPlayer({
@@ -800,24 +1178,13 @@
               playerRef.current = player;
               player.attachMediaElement(video);
               player.load();
-
-              const triggerPlay = () => {
-                const p = player.play();
-                if (p && p.catch) {
-                  p.catch(() => {
-                    video.muted = true;
-                    setNeedsUnmute(true);
-                    player.play().catch(() => {});
-                  });
-                }
-              };
-
-              triggerPlay();
+              attemptPlay(player, video);
 
               player.on(window.mpegts.Events.ERROR, () => {
                 if (video.currentTime > 0) return;
-                setTimeout(() => {
-                  if (video.currentTime === 0) setStatus('ERROR');
+                if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+                errorTimerRef.current = setTimeout(() => {
+                  if (videoRef.current && videoRef.current.currentTime === 0) setStatus('ERROR');
                 }, 7000);
               });
             } catch (_) {
@@ -826,23 +1193,12 @@
           } else {
             video.src = directProxyUrl;
             video.load();
-            video.play().catch(() => {
-              video.muted = true;
-              setNeedsUnmute(true);
-              video.play().catch(() => {});
-            });
+            attemptPlay(video, video);
           }
         } else {
           video.src = directProxyUrl;
           video.load();
-          const p = video.play();
-          if (p && p.catch) {
-            p.catch(() => {
-              video.muted = true;
-              setNeedsUnmute(true);
-              video.play().catch(() => {});
-            });
-          }
+          attemptPlay(video, video);
         }
       };
 
@@ -852,17 +1208,30 @@
 
         const handlePlaying = () => setStatus('PLAYING');
         const handleTimeUpdate = () => {
-          if (video.currentTime > 0 && status === 'LOADING') setStatus('PLAYING');
+          if (video.currentTime > 0) {
+            setStatus((prev) => (prev === 'LOADING' ? 'PLAYING' : prev));
+          }
+        };
+        const handleError = () => {
+          if (video.getAttribute('src')) setStatus('ERROR');
         };
 
         video.addEventListener('playing', handlePlaying);
         video.addEventListener('timeupdate', handleTimeUpdate);
+        video.addEventListener('error', handleError);
+
+        const handleUnload = () => cleanup();
+        window.addEventListener('pagehide', handleUnload);
+        window.addEventListener('beforeunload', handleUnload);
 
         return () => {
           video.removeEventListener('playing', handlePlaying);
           video.removeEventListener('timeupdate', handleTimeUpdate);
+          video.removeEventListener('error', handleError);
+          window.removeEventListener('pagehide', handleUnload);
+          window.removeEventListener('beforeunload', handleUnload);
         };
-      }, [status]);
+      }, []);
 
       useEffect(() => {
         startPlayback();
@@ -878,6 +1247,19 @@
         }
       };
 
+      const handleFullscreen = () => {
+        const container = videoRef.current?.parentElement || videoRef.current;
+        if (!container) return;
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+          if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+          else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+        } else if (container.requestFullscreen) {
+          container.requestFullscreen().catch(() => {});
+        } else if (container.webkitRequestFullscreen) {
+          container.webkitRequestFullscreen();
+        }
+      };
+
       return (
         <div className="bg-black rounded-3xl overflow-hidden shadow-2xl relative border border-slate-800/90 w-full flex flex-col justify-center">
           <div className="relative aspect-video bg-black flex items-center justify-center">
@@ -890,6 +1272,16 @@
               className="w-full h-full object-contain cursor-pointer"
               onClick={handleUnmute}
             />
+
+            {status === 'PLAYING' && (
+              <button
+                onClick={handleFullscreen}
+                title="Pantalla Completa (Tecla F o Botón Azul)"
+                className="absolute bottom-14 right-4 z-20 px-3 py-1.5 rounded-xl bg-black/70 hover:bg-violet-600 border border-white/20 text-white font-bold text-xs shadow-xl transition"
+              >
+                ⛶ Pantalla Completa
+              </button>
+            )}
 
             {needsUnmute && (
               <button

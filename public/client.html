@@ -63,29 +63,55 @@
 
       const [searchReseller, setSearchReseller] = useState('');
 
+      const refreshCurrentSession = async () => {
+        if (userRole === 'ADMIN') {
+          const res = await fetch('/api/admin/session', { credentials: 'include' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Sesión expirada');
+          setAdminData({ devices: data.devices, settings: data.settings, licenses: data.licenses });
+          setIsLoggedIn(true);
+          return;
+        }
+        await handleLogin();
+      };
+
       const handleLogin = async (e) => {
         if (e) e.preventDefault();
         setLoading(true);
         setErrorMsg('');
         try {
-          const res = await fetch('/api/client/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId, devicePin })
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Credenciales inválidas');
+          const trimmedId = (deviceId || '').trim().toUpperCase();
+          if (trimmedId === 'ADMIN') {
+            const res = await fetch('/api/admin/login', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password: devicePin })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Contraseña de administrador inválida');
 
-          setUserRole(data.role);
-          if (data.role === 'ADMIN') {
+            setUserRole('ADMIN');
             setAdminData({ devices: data.devices, settings: data.settings, licenses: data.licenses });
+            setIsLoggedIn(true);
+            setDevicePin('');
+            localStorage.removeItem('tvgo_client_dev_pin');
+            localStorage.removeItem('tvgo_client_dev_id');
           } else {
-            setDeviceData(data.device);
-          }
+            const res = await fetch('/api/client/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ deviceId: trimmedId, devicePin })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Credenciales inválidas');
 
-          setIsLoggedIn(true);
-          localStorage.setItem('tvgo_client_dev_id', deviceId);
-          localStorage.setItem('tvgo_client_dev_pin', devicePin);
+            setUserRole('CLIENT');
+            setDeviceData(data.device);
+            setIsLoggedIn(true);
+            localStorage.setItem('tvgo_client_dev_id', trimmedId);
+            localStorage.setItem('tvgo_client_dev_pin', devicePin);
+          }
         } catch (err) {
           setErrorMsg(err.message);
         } finally {
@@ -105,9 +131,23 @@
           setErrorMsg('El proceso de pago fue cancelado o no completado.');
         }
 
-        if (deviceId && devicePin) {
-          handleLogin();
-        }
+        // Intentar restaurar sesión admin por cookie HttpOnly o sesión cliente guardada
+        fetch('/api/admin/session', { credentials: 'include' })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data && data.ok) {
+              setUserRole('ADMIN');
+              setAdminData({ devices: data.devices, settings: data.settings, licenses: data.licenses });
+              setIsLoggedIn(true);
+            } else if (deviceId && deviceId !== 'ADMIN' && devicePin) {
+              handleLogin();
+            }
+          })
+          .catch(() => {
+            if (deviceId && deviceId !== 'ADMIN' && devicePin) {
+              handleLogin();
+            }
+          });
       }, []);
 
       const openPlaylistModal = (dev) => {
@@ -151,13 +191,13 @@
 
           const res = await fetch('/api/client/save-playlist', {
             method: 'POST',
+            credentials: 'include',
             headers: {
-              'Content-Type': 'application/json',
-              'X-Admin-Key': userRole === 'ADMIN' ? devicePin : ''
+              'Content-Type': 'application/json'
             },
             body: JSON.stringify({
               deviceId: targetDeviceId || deviceId,
-              devicePin: targetPin || devicePin,
+              devicePin: userRole === 'ADMIN' ? '' : (targetPin || devicePin),
               playlist: playlistObj,
               clientNote,
               deviceModel
@@ -169,7 +209,7 @@
 
           setSuccessMsg(data.message);
           setShowPlaylistModal(false);
-          handleLogin();
+          await refreshCurrentSession();
         } catch (err) {
           setErrorMsg(err.message);
         } finally {
@@ -183,16 +223,19 @@
         try {
           const res = await fetch('/api/client/delete-playlist', {
             method: 'POST',
+            credentials: 'include',
             headers: {
-              'Content-Type': 'application/json',
-              'X-Admin-Key': userRole === 'ADMIN' ? devicePin : ''
+              'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ deviceId: targetId, devicePin: pin })
+            body: JSON.stringify({
+              deviceId: targetId,
+              devicePin: userRole === 'ADMIN' ? '' : pin
+            })
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || 'Error al eliminar lista');
           setSuccessMsg(data.message);
-          handleLogin();
+          await refreshCurrentSession();
         } catch (err) {
           alert('Error: ' + err.message);
         } finally {
@@ -214,7 +257,8 @@
         try {
           const res = await fetch('/api/admin/device-action', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': devicePin },
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               deviceId: editDevId,
               action: 'EDIT_DETAILS',
@@ -227,7 +271,7 @@
           if (!res.ok) throw new Error(result.error || 'Error al editar');
           setShowEditDeviceModal(false);
           setSuccessMsg('Datos del dispositivo actualizados con éxito.');
-          handleLogin();
+          await refreshCurrentSession();
         } catch (err) {
           alert('Error: ' + err.message);
         } finally {
@@ -247,7 +291,8 @@
         try {
           const res = await fetch('/api/admin/device-action', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': devicePin },
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               deviceId: msgDevId,
               action: 'SEND_MESSAGE',
@@ -258,7 +303,7 @@
           if (!res.ok) throw new Error(result.error || 'Error al enviar mensaje');
           setShowMessageModal(false);
           setSuccessMsg(messageText ? `Mensaje enviado a la pantalla ${msgDevId}` : `Mensaje eliminado de la pantalla`);
-          handleLogin();
+          await refreshCurrentSession();
         } catch (err) {
           alert('Error: ' + err.message);
         } finally {
@@ -272,13 +317,14 @@
         try {
           const res = await fetch('/api/admin/device-action', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': devicePin },
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ deviceId: devId, action: 'DELETE' })
           });
           const result = await res.json();
           if (!res.ok) throw new Error(result.error || 'Error al eliminar');
           setSuccessMsg(`Pantalla ${devId} eliminada.`);
-          handleLogin();
+          await refreshCurrentSession();
         } catch (err) {
           alert('Error: ' + err.message);
         } finally {
@@ -290,11 +336,12 @@
         try {
           const res = await fetch('/api/admin/device-action', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': devicePin },
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ deviceId: targetDevId, action })
           });
           const result = await res.json();
-          if (result.ok) handleLogin();
+          if (result.ok) await refreshCurrentSession();
         } catch (err) {
           alert('Error: ' + err.message);
         }
@@ -352,7 +399,15 @@
                     {userRole === 'ADMIN' ? 'Administrador Maestro' : `ID: ${deviceId}`}
                   </span>
                   <button
-                    onClick={() => { setIsLoggedIn(false); localStorage.removeItem('tvgo_client_dev_pin'); }}
+                    onClick={async () => {
+                      if (userRole === 'ADMIN') {
+                        await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+                      }
+                      setIsLoggedIn(false);
+                      setUserRole('CLIENT');
+                      setDevicePin('');
+                      localStorage.removeItem('tvgo_client_dev_pin');
+                    }}
                     className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-bold transition"
                   >
                     Cerrar Sesión

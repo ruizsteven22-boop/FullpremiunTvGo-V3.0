@@ -5,3 +5,5 @@ canales.json
 *.m3u
 *.m3u8
 .DS_Store
+data/
+public/GitLens.txt

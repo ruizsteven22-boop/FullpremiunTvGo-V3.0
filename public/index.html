@@ -342,6 +342,11 @@
           }
 
           setAuth(true);
+          try {
+            if (pl && typeof pl === 'object') {
+              localStorage.setItem('tvgo_saved_playlist', JSON.stringify(pl));
+            }
+          } catch (_) {}
         } catch (err) {
           alert('Error al conectar con la lista: ' + err.message);
         } finally {
@@ -353,12 +358,33 @@
       const authRef = useRef(auth);
       useEffect(() => { authRef.current = auth; }, [auth]);
 
+      const getSavedPlaylistLocal = () => {
+        try {
+          const raw = localStorage.getItem('tvgo_saved_playlist');
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && (parsed.m3uUrl || (parsed.host && parsed.username && parsed.password))) {
+            return parsed;
+          }
+        } catch (_) {}
+        return null;
+      };
+
       const syncWithServer = async (autoConnect = true) => {
+        const savedPlaylist = getSavedPlaylistLocal();
+        const savedPin = (() => {
+          try { return localStorage.getItem('tvgo_device_pin') || ''; } catch (_) { return ''; }
+        })();
+
         try {
           const res = await fetch('/api/device/init', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId })
+            body: JSON.stringify({
+              deviceId,
+              ...(savedPin && /^\d{4}$/.test(savedPin) ? { savedPin } : {}),
+              ...(savedPlaylist ? { savedPlaylist } : {})
+            })
           });
           const data = await res.json();
           if (data.devicePin) {
@@ -380,10 +406,26 @@
             setAdminNotice(null);
           }
 
-          if (data.playlist && data.access?.allowed !== false && autoConnect && !authRef.current) {
-            connectWithPlaylist(data.playlist);
+          if (data.playlist) {
+            try {
+              localStorage.setItem('tvgo_saved_playlist', JSON.stringify(data.playlist));
+            } catch (_) {}
+          } else if (data.playlistCleared) {
+            try {
+              localStorage.removeItem('tvgo_saved_playlist');
+            } catch (_) {}
           }
-        } catch (_) {}
+
+          const effectivePlaylist = data.playlist || (!data.playlistCleared ? savedPlaylist : null);
+          if (effectivePlaylist && data.access?.allowed !== false && autoConnect && !authRef.current) {
+            connectWithPlaylist(effectivePlaylist);
+          }
+        } catch (_) {
+          // Si el servidor está reiniciando durante un despliegue, mantener la lista ya cargada localmente
+          if (savedPlaylist && autoConnect && !authRef.current) {
+            connectWithPlaylist(savedPlaylist);
+          }
+        }
       };
 
       useEffect(() => {

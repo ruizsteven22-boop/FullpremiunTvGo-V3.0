@@ -2,6 +2,7 @@ const http = require('http');
 const https = require('https');
 const url = require('url');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const net = require('net');
@@ -37,7 +38,28 @@ const ALLOWED_HOSTS = ALLOWED_ORIGINS.map((o) => {
 const ADMIN_COOKIE_NAME = 'tvgo_admin_session';
 const ADMIN_SESSION_TTL_SEC = 8 * 60 * 60; // 8 horas
 
-const DATA_DIR = path.join(__dirname, 'data');
+function resolveDataDir() {
+  if (process.env.DATA_DIR && process.env.DATA_DIR.trim()) {
+    return path.resolve(process.env.DATA_DIR.trim());
+  }
+  if (NODE_ENV === 'production') {
+    try {
+      const persistentDir = path.join(os.homedir(), '.fullpremiumtvgo-data');
+      if (!fs.existsSync(persistentDir)) {
+        fs.mkdirSync(persistentDir, { recursive: true });
+      }
+      const legacyDb = path.join(__dirname, 'data', 'db.json');
+      const newDb = path.join(persistentDir, 'db.json');
+      if (fs.existsSync(legacyDb) && !fs.existsSync(newDb)) {
+        fs.copyFileSync(legacyDb, newDb);
+      }
+      return persistentDir;
+    } catch (_) {}
+  }
+  return path.join(__dirname, 'data');
+}
+
+const DATA_DIR = resolveDataDir();
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -414,6 +436,13 @@ const deviceSyncLimiter = rateLimit({
   message: { error: 'Demasiadas peticiones de sincronización.' }
 });
 
+function isValidPlaylistObject(pl) {
+  if (!pl || typeof pl !== 'object') return false;
+  if (pl.type === 'M3U' && typeof pl.m3uUrl === 'string' && pl.m3uUrl.trim().length > 5) return true;
+  if (pl.type === 'XTREAM' && typeof pl.host === 'string' && pl.host.trim().length > 5 && typeof pl.username === 'string' && pl.username.trim().length > 0 && typeof pl.password === 'string' && pl.password.trim().length > 0) return true;
+  return false;
+}
+
 // 1. INICIALIZACIÓN DE LA PANTALLA
 app.post('/api/device/init', deviceSyncLimiter, (req, res) => {
   try {
@@ -421,12 +450,17 @@ app.post('/api/device/init', deviceSyncLimiter, (req, res) => {
     const deviceId = (payload.deviceId || '').trim();
     if (!deviceId) return res.status(400).json({ error: 'deviceId es requerido' });
 
+    const savedPin = typeof payload.savedPin === 'string' && /^\d{4}$/.test(payload.savedPin.trim())
+      ? payload.savedPin.trim()
+      : null;
+    const savedPlaylist = isValidPlaylistObject(payload.savedPlaylist) ? payload.savedPlaylist : null;
+
     const db = loadDb();
     let device = db.devices[deviceId];
     const now = Date.now();
 
     if (!device) {
-      const permanentPin = Math.floor(1000 + Math.random() * 9000).toString();
+      const permanentPin = savedPin || Math.floor(1000 + Math.random() * 9000).toString();
       device = {
         deviceId,
         devicePin: permanentPin,
@@ -434,10 +468,11 @@ app.post('/api/device/init', deviceSyncLimiter, (req, res) => {
         lastSeenAt: now,
         clientType: payload.clientType === 'EXTERNAL' ? 'EXTERNAL' : 'OFFICIAL',
         providerLabel: payload.providerLabel || 'Full Premium TvGo',
-        username: payload.username || null,
+        username: savedPlaylist?.username || payload.username || null,
         deviceModel: payload.deviceModel || 'Smart TV / PC',
         clientNote: payload.clientNote || '',
-        playlist: null,
+        playlist: savedPlaylist,
+        playlistClearedAt: null,
         licenseCode: null,
         licenseEndsAt: null,
         customMessage: null,
@@ -447,7 +482,14 @@ app.post('/api/device/init', deviceSyncLimiter, (req, res) => {
     } else {
       device.lastSeenAt = now;
       if (!device.devicePin) {
-        device.devicePin = Math.floor(1000 + Math.random() * 9000).toString();
+        device.devicePin = savedPin || Math.floor(1000 + Math.random() * 9000).toString();
+      }
+      // Preservar lista cargada en la app si el servidor perdió el registro tras una actualización (y no fue borrada manualmente)
+      if (!device.playlist && !device.playlistClearedAt && savedPlaylist) {
+        device.playlist = savedPlaylist;
+        if (savedPlaylist.username && !device.username) {
+          device.username = savedPlaylist.username;
+        }
       }
     }
 
@@ -460,6 +502,7 @@ app.post('/api/device/init', deviceSyncLimiter, (req, res) => {
       deviceModel: device.deviceModel,
       clientNote: device.clientNote,
       playlist: device.playlist || null,
+      playlistCleared: Boolean(device.playlistClearedAt && !device.playlist),
       access,
       pricing: db.settings,
       adminNotice: device.customMessage ? { text: device.customMessage, active: true, target: 'PRIVATE' } : db.broadcastMessage,
@@ -604,6 +647,7 @@ app.post('/api/client/save-playlist', (req, res) => {
     }
 
     device.playlist = playlist;
+    device.playlistClearedAt = null;
     if (clientNote) device.clientNote = clientNote;
     if (deviceModel) device.deviceModel = deviceModel;
     if (playlist?.username) device.username = playlist.username;
@@ -640,6 +684,7 @@ app.post('/api/client/delete-playlist', (req, res) => {
     }
 
     device.playlist = null;
+    device.playlistClearedAt = Date.now();
     saveDb(db);
 
     return res.status(200).json({ ok: true, message: 'Lista eliminada del dispositivo.' });

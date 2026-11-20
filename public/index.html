@@ -439,18 +439,39 @@
           ]);
 
           if (Array.isArray(moviesData)) {
+            const normMovieKey = (t) => (t || '').replace(/\(\s*4k\s*\)|\(\s*uhd\s*\)|\(\s*2160p\s*\)|\b4k\b/gi, '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const fhdByTitle = {};
+            moviesData.forEach((m) => {
+              const name = m.name || '';
+              const catName = vodCatMap[String(m.category_id || '')] || '';
+              const is4k = /4k|2160p|uhd/i.test(name) || /4k/i.test(catName);
+              if (!is4k && m.stream_id) {
+                const ext = (m.container_extension || 'mp4').toLowerCase();
+                const key = normMovieKey(name);
+                if (key && !fhdByTitle[key]) {
+                  fhdByTitle[key] = `${finalHost}/movie/${targetUser}/${targetPass}/${m.stream_id}.${ext}`;
+                }
+              }
+            });
+
             setMoviesCatalog(moviesData.map((m, idx) => {
               const ext = (m.container_extension || 'mp4').toLowerCase();
+              const name = m.name || `Película ${idx + 1}`;
+              const catName = vodCatMap[String(m.category_id || '')] || 'Películas';
+              const is4k = /4k|2160p|uhd/i.test(name) || /4k/i.test(catName);
+              const primaryUrl = `${finalHost}/movie/${targetUser}/${targetPass}/${m.stream_id}.${ext}`;
+              const fhdCounterpart = is4k ? (fhdByTitle[normMovieKey(name)] || null) : null;
               return {
                 type: 'MOVIE',
                 id: `movie-${m.stream_id || idx}`,
                 streamId: m.stream_id,
-                title: m.name || `Película ${idx + 1}`,
+                title: name,
                 logo: m.stream_icon || '',
                 ext,
                 categoryId: String(m.category_id || ''),
-                categoryName: vodCatMap[String(m.category_id || '')] || 'Películas',
-                streamUrl: `${finalHost}/movie/${targetUser}/${targetPass}/${m.stream_id}.${ext}`
+                categoryName: catName,
+                streamUrl: primaryUrl,
+                fhdStreamUrl: (fhdCounterpart && fhdCounterpart !== primaryUrl) ? fhdCounterpart : null
               };
             }));
           }
@@ -1543,10 +1564,17 @@
       const [needsUnmute, setNeedsUnmute] = useState(false);
       const [audioTracks, setAudioTracks] = useState([]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
+      const [useFhdCompat, setUseFhdCompat] = useState(true);
       // vodMode: 'DIRECT' (proxy nativo con Range) | 'REMUX' (FFmpeg -c:v copy -c:a aac -sn -f matroska) | 'TRANSCODE' (FFmpeg 720p H264 + AAC para evitar pantalla partida en 4K/10-bit)
       const [vodMode, setVodMode] = useState('DIRECT');
       // liveModeType: 'DIRECT_TS' (mpegts.js directo) | 'FFMPEG_TS' (FFmpeg H264+AAC MPEG-TS para canales MPEG2/MP2/AC3 como Mega SD)
       const [liveModeType, setLiveModeType] = useState('DIRECT_TS');
+
+      const activeStreamUrl = useMemo(() => {
+        if (!item?.streamUrl) return '';
+        if (useFhdCompat && item.fhdStreamUrl) return item.fhdStreamUrl;
+        return item.streamUrl;
+      }, [item, useFhdCompat]);
 
       const cleanup = () => {
         if (fallbackTimerRef.current) {
@@ -1604,15 +1632,15 @@
         }
 
         const isDualTitle = /dual/i.test(item.title || '');
-        const isAvi = item.ext === 'avi' || /\.avi(\?|$)/i.test(item.streamUrl);
-        const isMkv = item.ext === 'mkv' || /\.mkv(\?|$)/i.test(item.streamUrl);
-        const is4kTitle = /4k|2160p/i.test(item.title || '') || /4k/i.test(item.categoryName || '');
+        const targetUrlToPlay = (useFhdCompat && item.fhdStreamUrl) ? item.fhdStreamUrl : item.streamUrl;
+        const isAvi = item.ext === 'avi' || /\.avi(\?|$)/i.test(targetUrlToPlay);
+        const isMkv = item.ext === 'mkv' || /\.mkv(\?|$)/i.test(targetUrlToPlay);
+        const is4kTitle = (/4k|2160p/i.test(item.title || '') || /4k/i.test(item.categoryName || '')) && !(useFhdCompat && item.fhdStreamUrl);
 
         setSelectedAudioTrack(0);
         setLiveModeType('DIRECT_TS');
 
-        // Películas 4K o AVI entran directo a TRANSCODE (720p H.264 8-bit) para evitar que el decodificador del TV parta la pantalla en dos;
-        // archivos MKV entran directo a REMUX rápido (-probesize 64KB -sn -c:v copy -c:a aac) que limpia subtítulos PGS y audio EAC3 en 1.5s
+        // Si la película 4K tiene su versión FHD 1080p vinculada (fhdStreamUrl), entra por REMUX (-c:v copy, 0% CPU y sin pantalla partida)
         const initialVodMode = (isAvi || is4kTitle) ? 'TRANSCODE' : (isMkv ? 'REMUX' : 'DIRECT');
         minRequiredModeRef.current = initialVodMode;
         setVodMode(initialVodMode);
@@ -1630,12 +1658,20 @@
           // Inspeccionar pistas reales (ej: Los Vengadores 2 trae 2 pistas de audio aunque no dice DUAL en el título)
           let cancelled = false;
           const probeTimer = setTimeout(() => {
-            fetch(`/api/media/tracks?url=${encodeURIComponent(item.streamUrl)}`)
+            fetch(`/api/media/tracks?url=${encodeURIComponent(targetUrlToPlay)}`)
               .then(r => r.ok ? r.json() : null)
               .then(data => {
                 if (cancelled || !data || !data.ok) return;
                 if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
                   setAudioTracks(data.audioTracks);
+                  // Si la pista 0 viene en inglés y hay otra pista en español (ej. Spider-Man 1948003), preseleccionar español automáticamente
+                  const firstLang = (data.audioTracks[0]?.lang || '').toLowerCase();
+                  if (firstLang === 'eng' || firstLang === 'en') {
+                    const spaTrack = data.audioTracks.find(t => ['spa', 'es', 'lat', 'cast'].includes((t.lang || '').toLowerCase()) || /espa|latino/i.test(t.label || ''));
+                    if (spaTrack) {
+                      setSelectedAudioTrack(spaTrack.index);
+                    }
+                  }
                 }
                 const firstCodec = (data.audioTracks?.[0]?.codec || '').toLowerCase();
                 const needsAudioRemux = ['ac3', 'eac3', 'dts', 'truehd', 'flac', 'mp2'].includes(firstCodec);
@@ -1650,7 +1686,7 @@
                 }
               })
               .catch(() => {});
-          }, 900);
+          }, 800);
 
           return () => {
             cancelled = true;
@@ -1659,11 +1695,11 @@
         } else {
           setAudioTracks([]);
         }
-      }, [item]);
+      }, [item, useFhdCompat]);
 
       const startPlayback = () => {
         cleanup();
-        if (!item?.streamUrl || !videoRef.current) {
+        if (!activeStreamUrl || !videoRef.current) {
           setStatus('IDLE');
           return;
         }
@@ -1675,12 +1711,12 @@
         video.volume = 1.0;
 
         const devParam = `deviceId=${encodeURIComponent(deviceId || '')}`;
-        const directProxyUrl = `${window.location.origin}/proxy?${devParam}&url=${encodeURIComponent(item.streamUrl)}`;
+        const directProxyUrl = `${window.location.origin}/proxy?${devParam}&url=${encodeURIComponent(activeStreamUrl)}`;
 
         // 1. MODO TV EN VIVO (LIVE)
         if (isLiveMode || item.type === 'LIVE') {
           const liveStreamUrl = liveModeType === 'FFMPEG_TS'
-            ? `${window.location.origin}/api/media/live-ts?${devParam}&url=${encodeURIComponent(item.streamUrl)}`
+            ? `${window.location.origin}/api/media/live-ts?${devParam}&url=${encodeURIComponent(activeStreamUrl)}`
             : directProxyUrl;
 
           if (window.mpegts && window.mpegts.isSupported()) {
@@ -1739,9 +1775,9 @@
         // 2. MODO CINE Y SERIES (VOD)
         let targetVodUrl = directProxyUrl;
         if (vodMode === 'TRANSCODE') {
-          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(item.streamUrl)}&audioTrack=${selectedAudioTrack}&transcodeVideo=1`;
+          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}&transcodeVideo=1`;
         } else if (vodMode === 'REMUX' || selectedAudioTrack > 0) {
-          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(item.streamUrl)}&audioTrack=${selectedAudioTrack}`;
+          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}`;
         }
 
         video.src = targetVodUrl;
@@ -1847,7 +1883,7 @@
       useEffect(() => {
         startPlayback();
         return () => cleanup();
-      }, [item, vodMode, liveModeType, selectedAudioTrack]);
+      }, [activeStreamUrl, vodMode, liveModeType, selectedAudioTrack]);
 
       const handleSelectAudioTrack = (idx) => {
         setSelectedAudioTrack(idx);

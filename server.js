@@ -1234,6 +1234,7 @@ app.get('/api/media/live-ts', (req, res) => {
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
+    '-threads', '2',
     '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
@@ -1245,6 +1246,7 @@ app.get('/api/media/live-ts', (req, res) => {
     '-map', '0:V:0?',
     '-map', '0:a:0?',
     '-c:v', 'libx264',
+    '-threads', '2',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
     '-vf', 'scale=1280:-2,format=yuv420p',
@@ -1348,6 +1350,7 @@ app.get('/api/media/stream', (req, res) => {
   if (transcodeVideo) {
     args.push(
       '-c:v', 'libx264',
+      '-threads', '2',
       '-preset', 'ultrafast',
       '-vf', 'scale=1280:-2,format=yuv420p',
       '-g', '48',

@@ -1106,9 +1106,10 @@ app.get('/api/media/tracks', (req, res) => {
 
   const proc = spawn(ffmpegPath, [
     '-hide_banner',
-    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
-    '-probesize', '5000000',
-    '-analyzeduration', '5000000',
+    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+    '-probesize', '65536',
+    '-analyzeduration', '0',
+    '-fpsprobesize', '0',
     '-i', targetUrl
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
@@ -1182,7 +1183,7 @@ app.get('/api/media/tracks', (req, res) => {
     });
   };
 
-  const timer = setTimeout(finishProbe, 3000);
+  const timer = setTimeout(finishProbe, 5500);
 
   proc.stderr.on('data', (chunk) => {
     stderrData += chunk.toString();
@@ -1233,10 +1234,12 @@ app.get('/api/media/live-ts', (req, res) => {
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
-    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
+    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
+    '-probesize', '131072',
+    '-analyzeduration', '200000',
     '-fflags', '+genpts+discardcorrupt',
     '-i', targetUrl,
     '-map', '0:V:0?',
@@ -1321,12 +1324,13 @@ app.get('/api/media/stream', (req, res) => {
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
-    '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
+    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
-    '-probesize', '5000000',
-    '-analyzeduration', '5000000',
+    '-probesize', '65536',
+    '-analyzeduration', '0',
+    '-fpsprobesize', '0',
     '-fflags', '+genpts+discardcorrupt'
   ];
 

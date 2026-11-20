@@ -1605,13 +1605,15 @@
 
         const isDualTitle = /dual/i.test(item.title || '');
         const isAvi = item.ext === 'avi' || /\.avi(\?|$)/i.test(item.streamUrl);
+        const isMkv = item.ext === 'mkv' || /\.mkv(\?|$)/i.test(item.streamUrl);
         const is4kTitle = /4k|2160p/i.test(item.title || '') || /4k/i.test(item.categoryName || '');
 
         setSelectedAudioTrack(0);
         setLiveModeType('DIRECT_TS');
 
-        // Películas 4K o AVI entran directo a TRANSCODE (720p H.264 8-bit) para evitar que el decodificador del TV parta la pantalla en dos
-        const initialVodMode = (isAvi || is4kTitle) ? 'TRANSCODE' : 'DIRECT';
+        // Películas 4K o AVI entran directo a TRANSCODE (720p H.264 8-bit) para evitar que el decodificador del TV parta la pantalla en dos;
+        // archivos MKV entran directo a REMUX rápido (-probesize 64KB -sn -c:v copy -c:a aac) que limpia subtítulos PGS y audio EAC3 en 1.5s
+        const initialVodMode = (isAvi || is4kTitle) ? 'TRANSCODE' : (isMkv ? 'REMUX' : 'DIRECT');
         minRequiredModeRef.current = initialVodMode;
         setVodMode(initialVodMode);
 
@@ -1625,30 +1627,35 @@
             setAudioTracks([]);
           }
 
-          // Inspeccionar pistas reales y subtítulos PGS (ej: Los Vengadores 2 trae 2 pistas de audio aunque no dice DUAL en el título)
+          // Inspeccionar pistas reales (ej: Los Vengadores 2 trae 2 pistas de audio aunque no dice DUAL en el título)
           let cancelled = false;
-          fetch(`/api/media/tracks?url=${encodeURIComponent(item.streamUrl)}`)
-            .then(r => r.ok ? r.json() : null)
-            .then(data => {
-              if (cancelled || !data || !data.ok) return;
-              if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
-                setAudioTracks(data.audioTracks);
-              }
-              const firstCodec = (data.audioTracks?.[0]?.codec || '').toLowerCase();
-              const needsAudioRemux = ['ac3', 'eac3', 'dts', 'truehd', 'flac', 'mp2'].includes(firstCodec);
-              if (data.videoWidth > 1920 || data.is10Bit) {
-                minRequiredModeRef.current = 'TRANSCODE';
-                setVodMode('TRANSCODE');
-              } else if (data.hasIncompatibleSubs || needsAudioRemux) {
-                if (minRequiredModeRef.current === 'DIRECT') {
-                  minRequiredModeRef.current = 'REMUX';
+          const probeTimer = setTimeout(() => {
+            fetch(`/api/media/tracks?url=${encodeURIComponent(item.streamUrl)}`)
+              .then(r => r.ok ? r.json() : null)
+              .then(data => {
+                if (cancelled || !data || !data.ok) return;
+                if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
+                  setAudioTracks(data.audioTracks);
                 }
-                setVodMode((prev) => (prev === 'DIRECT' ? 'REMUX' : prev));
-              }
-            })
-            .catch(() => {});
+                const firstCodec = (data.audioTracks?.[0]?.codec || '').toLowerCase();
+                const needsAudioRemux = ['ac3', 'eac3', 'dts', 'truehd', 'flac', 'mp2'].includes(firstCodec);
+                if (data.videoWidth > 1920 || data.is10Bit) {
+                  minRequiredModeRef.current = 'TRANSCODE';
+                  setVodMode('TRANSCODE');
+                } else if (data.hasIncompatibleSubs || needsAudioRemux) {
+                  if (minRequiredModeRef.current === 'DIRECT') {
+                    minRequiredModeRef.current = 'REMUX';
+                  }
+                  setVodMode((prev) => (prev === 'DIRECT' ? 'REMUX' : prev));
+                }
+              })
+              .catch(() => {});
+          }, 900);
 
-          return () => { cancelled = true; };
+          return () => {
+            cancelled = true;
+            clearTimeout(probeTimer);
+          };
         } else {
           setAudioTracks([]);
         }

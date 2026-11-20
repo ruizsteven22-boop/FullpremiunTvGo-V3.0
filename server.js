@@ -1107,8 +1107,8 @@ app.get('/api/media/tracks', (req, res) => {
   const proc = spawn(ffmpegPath, [
     '-hide_banner',
     '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
-    '-probesize', '1500000',
-    '-analyzeduration', '1500000',
+    '-probesize', '5000000',
+    '-analyzeduration', '5000000',
     '-i', targetUrl
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
@@ -1118,10 +1118,34 @@ app.get('/api/media/tracks', (req, res) => {
     try { proc.kill('SIGKILL'); } catch (_) {}
 
     const tracks = [];
+    let videoCodec = '';
+    let videoWidth = 0;
+    let videoHeight = 0;
+    let is10Bit = false;
+    let hasIncompatibleSubs = false;
+
+    if (/hdmv_pgs_subtitle|dvd_subtitle|Could not find codec parameters for stream/i.test(stderrData)) {
+      hasIncompatibleSubs = true;
+    }
+
     const lines = stderrData.split(/\r?\n/);
     let audioIdx = 0;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+
+      if (!videoCodec && /Stream #\d+:\d+.*:\s*Video:\s*([a-zA-Z0-9_]+)/i.test(line) && !/attached_pic|\bpng\b|\bmjpeg\b/i.test(line)) {
+        const vm = line.match(/Video:\s*([a-zA-Z0-9_]+)/i);
+        if (vm) videoCodec = vm[1].toLowerCase();
+        const resM = line.match(/\b(\d{3,4})x(\d{3,4})\b/);
+        if (resM) {
+          videoWidth = parseInt(resM[1], 10) || 0;
+          videoHeight = parseInt(resM[2], 10) || 0;
+        }
+        if (/yuv420p10|Main 10|bt2020/i.test(line)) {
+          is10Bit = true;
+        }
+      }
+
       const m = line.match(/Stream #\d+:\d+(?:\(([a-zA-Z0-9_-]+)\))?[^:]*:\s*Audio:\s*([a-zA-Z0-9_]+)/i);
       if (m) {
         const langCode = (m[1] || 'und').toLowerCase();
@@ -1147,7 +1171,15 @@ app.get('/api/media/tracks', (req, res) => {
       }
     }
 
-    return res.status(200).json({ ok: true, audioTracks: tracks });
+    return res.status(200).json({
+      ok: true,
+      videoCodec,
+      videoWidth,
+      videoHeight,
+      is10Bit,
+      hasIncompatibleSubs,
+      audioTracks: tracks
+    });
   };
 
   const timer = setTimeout(finishProbe, 3000);
@@ -1212,7 +1244,7 @@ app.get('/api/media/live-ts', (req, res) => {
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-vf', "scale='min(1280,iw)':-2,format=yuv420p",
+    '-vf', 'scale=1280:-2,format=yuv420p',
     '-g', '30',
     '-b:v', '2200k',
     '-maxrate', '2500k',
@@ -1293,6 +1325,8 @@ app.get('/api/media/stream', (req, res) => {
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
+    '-probesize', '5000000',
+    '-analyzeduration', '5000000',
     '-fflags', '+genpts+discardcorrupt'
   ];
 
@@ -1303,14 +1337,15 @@ app.get('/api/media/stream', (req, res) => {
   args.push(
     '-i', targetUrl,
     '-map', '0:V:0?',
-    '-map', `0:a:${audioTrack}?`
+    '-map', `0:a:${audioTrack}?`,
+    '-sn'
   );
 
   if (transcodeVideo) {
     args.push(
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
-      '-vf', "scale='min(1280,iw)':-2,format=yuv420p",
+      '-vf', 'scale=1280:-2,format=yuv420p',
       '-g', '48',
       '-b:v', '2500k',
       '-maxrate', '2800k',
@@ -1366,10 +1401,20 @@ app.get('/panel-control-privado-xyz.html', (_req, res) => {
   res.status(404).type('text/plain').send('Not Found');
 });
 
-// 10. ARCHIVOS ESTÁTICOS
-app.use(express.static(PUBLIC_DIR, { index: 'index.html' }));
+// 10. ARCHIVOS ESTÁTICOS (SIN CACHÉ EN HTML/SW PARA ACTUALIZACIÓN INMEDIATA EN SMART TV)
+app.use((req, res, next) => {
+  if (req.path === '/' || req.path.endsWith('.html') || req.path === '/sw.js') {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
+
+app.use(express.static(PUBLIC_DIR, { index: 'index.html', etag: false, lastModified: false }));
 
 app.use((_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 

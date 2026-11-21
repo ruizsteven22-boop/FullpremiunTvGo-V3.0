@@ -876,7 +876,7 @@
                     Full Premium <span className="text-cyan-300">TvGo</span>
                   </span>
                   <span className="px-1.5 py-0.2 rounded bg-cyan-500/20 border border-cyan-400/40 text-[9px] font-mono font-black text-cyan-300">
-                    v4.5
+                    v4.6
                   </span>
                   {auth && (
                     <span className="text-slate-400 text-xs font-semibold hidden sm:inline">
@@ -1557,15 +1557,15 @@
       const playerRef = useRef(null);
       const hlsRef = useRef(null);
       const fallbackTimerRef = useRef(null);
-      const probedItemIdRef = useRef(null);
       const minRequiredModeRef = useRef('DIRECT');
+      const videoCodecRef = useRef('h264');
 
       const [status, setStatus] = useState('IDLE');
       const [needsUnmute, setNeedsUnmute] = useState(false);
       const [audioTracks, setAudioTracks] = useState([]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
       const [useFhdCompat, setUseFhdCompat] = useState(true);
-      // vodMode: 'DIRECT' (proxy nativo con Range) | 'REMUX' (FFmpeg -c:v copy -c:a aac -sn -f matroska) | 'TRANSCODE' (FFmpeg 720p H264 + AAC para evitar pantalla partida en 4K/10-bit)
+      // vodMode: 'DIRECT' (/proxy nativo con Range) | 'REMUX' (FFmpeg -c:v copy -c:a aac -f mpegts via mpegts.js) | 'TRANSCODE' (FFmpeg H264 + AAC -f mpegts via mpegts.js)
       const [vodMode, setVodMode] = useState('DIRECT');
       // liveModeType: 'DIRECT_TS' (mpegts.js directo) | 'FFMPEG_TS' (FFmpeg H264+AAC MPEG-TS para canales MPEG2/MP2/AC3 como Mega SD)
       const [liveModeType, setLiveModeType] = useState('DIRECT_TS');
@@ -1619,9 +1619,45 @@
         }
       };
 
+      const attachMpegtsPlayer = (streamUrl, onFatalError) => {
+        const video = videoRef.current;
+        if (!video || !window.mpegts || !window.mpegts.isSupported()) return false;
+        try {
+          const player = window.mpegts.createPlayer({
+            type: 'm2ts',
+            isLive: true,
+            url: streamUrl
+          }, {
+            enableWorker: true,
+            lazyLoad: false,
+            enableStashBuffer: true,
+            stashInitialSize: 256 * 1024,
+            liveBufferLatencyChasing: false,
+            autoCleanupSourceBuffer: true,
+            autoCleanupMaxBackwardDuration: 30,
+            autoCleanupMinBackwardDuration: 15
+          });
+
+          playerRef.current = player;
+          player.attachMediaElement(video);
+          player.load();
+          attemptPlay(player, video);
+
+          player.on(window.mpegts.Events.ERROR, (errType) => {
+            if (video.currentTime > 0 && video.readyState >= 2) return;
+            if (typeof onFatalError === 'function') {
+              onFatalError(errType);
+            }
+          });
+          return true;
+        } catch (_) {
+          return false;
+        }
+      };
+
       useEffect(() => {
-        probedItemIdRef.current = null;
         minRequiredModeRef.current = 'DIRECT';
+        videoCodecRef.current = 'h264';
         if (!item?.streamUrl) {
           setAudioTracks([]);
           setSelectedAudioTrack(0);
@@ -1634,14 +1670,12 @@
         const isDualTitle = /dual/i.test(item.title || '');
         const targetUrlToPlay = (useFhdCompat && item.fhdStreamUrl) ? item.fhdStreamUrl : item.streamUrl;
         const isAvi = item.ext === 'avi' || /\.avi(\?|$)/i.test(targetUrlToPlay);
-        const isMkv = item.ext === 'mkv' || /\.mkv(\?|$)/i.test(targetUrlToPlay);
-        const is4kTitle = (/4k|2160p/i.test(item.title || '') || /4k/i.test(item.categoryName || '')) && !(useFhdCompat && item.fhdStreamUrl);
+        const isUnlinked4k = (/4k|2160p/i.test(item.title || '') || /4k/i.test(item.categoryName || '')) && !(useFhdCompat && item.fhdStreamUrl);
 
         setSelectedAudioTrack(0);
         setLiveModeType('DIRECT_TS');
 
-        // Si la película 4K tiene su versión FHD 1080p vinculada (fhdStreamUrl), entra por REMUX (-c:v copy, 0% CPU y sin pantalla partida)
-        const initialVodMode = (isAvi || is4kTitle) ? 'TRANSCODE' : (isMkv ? 'REMUX' : 'DIRECT');
+        const initialVodMode = (isAvi || isUnlinked4k) ? 'TRANSCODE' : 'DIRECT';
         minRequiredModeRef.current = initialVodMode;
         setVodMode(initialVodMode);
 
@@ -1655,38 +1689,33 @@
             setAudioTracks([]);
           }
 
-          // Inspeccionar pistas reales (ej: Los Vengadores 2 trae 2 pistas de audio aunque no dice DUAL en el título)
           let cancelled = false;
           const probeTimer = setTimeout(() => {
             fetch(`/api/media/tracks?url=${encodeURIComponent(targetUrlToPlay)}`)
               .then(r => r.ok ? r.json() : null)
               .then(data => {
                 if (cancelled || !data || !data.ok) return;
+                if (data.videoCodec) {
+                  videoCodecRef.current = data.videoCodec.toLowerCase();
+                }
                 if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
                   setAudioTracks(data.audioTracks);
-                  // Si la pista 0 viene en inglés y hay otra pista en español (ej. Spider-Man 1948003), preseleccionar español automáticamente
-                  const firstLang = (data.audioTracks[0]?.lang || '').toLowerCase();
-                  if (firstLang === 'eng' || firstLang === 'en') {
-                    const spaTrack = data.audioTracks.find(t => ['spa', 'es', 'lat', 'cast'].includes((t.lang || '').toLowerCase()) || /espa|latino/i.test(t.label || ''));
-                    if (spaTrack) {
-                      setSelectedAudioTrack(spaTrack.index);
-                    }
-                  }
                 }
                 const firstCodec = (data.audioTracks?.[0]?.codec || '').toLowerCase();
                 const needsAudioRemux = ['ac3', 'eac3', 'dts', 'truehd', 'flac', 'mp2'].includes(firstCodec);
-                if (data.videoWidth > 1920 || data.is10Bit) {
+                const isHevcOr10Bit = data.videoWidth > 1920 || data.is10Bit || videoCodecRef.current === 'hevc';
+
+                if (data.videoWidth > 1920) {
                   minRequiredModeRef.current = 'TRANSCODE';
                   setVodMode('TRANSCODE');
                 } else if (data.hasIncompatibleSubs || needsAudioRemux) {
-                  if (minRequiredModeRef.current === 'DIRECT') {
-                    minRequiredModeRef.current = 'REMUX';
-                  }
-                  setVodMode((prev) => (prev === 'DIRECT' ? 'REMUX' : prev));
+                  const nextMode = isHevcOr10Bit ? 'TRANSCODE' : 'REMUX';
+                  minRequiredModeRef.current = nextMode;
+                  setVodMode((prev) => (prev === 'DIRECT' ? nextMode : prev));
                 }
               })
               .catch(() => {});
-          }, 800);
+          }, 600);
 
           return () => {
             cancelled = true;
@@ -1710,59 +1739,50 @@
         video.muted = false;
         video.volume = 1.0;
 
-        const devParam = `deviceId=${encodeURIComponent(deviceId || '')}`;
-        const directProxyUrl = `${window.location.origin}/proxy?${devParam}&url=${encodeURIComponent(activeStreamUrl)}`;
+        const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(activeStreamUrl)}`;
 
         // 1. MODO TV EN VIVO (LIVE)
         if (isLiveMode || item.type === 'LIVE') {
+          const isHlsStream = /\.m3u8(\?|$)/i.test(activeStreamUrl);
+          if (isHlsStream && window.Hls && window.Hls.isSupported()) {
+            try {
+              const hls = new window.Hls({
+                enableWorker: true,
+                lowLatencyMode: true,
+                maxBufferLength: 20,
+                maxMaxBufferLength: 30,
+                backBufferLength: 10
+              });
+              hlsRef.current = hls;
+              hls.loadSource(directProxyUrl);
+              hls.attachMedia(video);
+              hls.on(window.Hls.Events.MANIFEST_PARSED, () => attemptPlay(video, video));
+              hls.on(window.Hls.Events.ERROR, (_, data) => {
+                if (data && data.fatal) setStatus('ERROR');
+              });
+              return;
+            } catch (_) {}
+          }
+
           const liveStreamUrl = liveModeType === 'FFMPEG_TS'
-            ? `${window.location.origin}/api/media/live-ts?${devParam}&url=${encodeURIComponent(activeStreamUrl)}`
+            ? `${window.location.origin}/api/media/live-ts?url=${encodeURIComponent(activeStreamUrl)}`
             : directProxyUrl;
 
-          if (window.mpegts && window.mpegts.isSupported()) {
-            try {
-              const player = window.mpegts.createPlayer({
-                type: 'm2ts',
-                isLive: true,
-                url: liveStreamUrl
-              }, {
-                enableWorker: false,
-                lazyLoad: false,
-                enableStashBuffer: false,
-                fixAudioTimestampGap: true,
-                liveBufferLatencyChasing: true,
-                liveBufferLatencyMaxLatency: 4.5,
-                liveBufferLatencyMinRemain: 0.8,
-                autoCleanupSourceBuffer: true,
-                autoCleanupMaxBackwardDuration: 25,
-                autoCleanupMinBackwardDuration: 12
-              });
+          const attached = attachMpegtsPlayer(liveStreamUrl, (errType) => {
+            if (liveModeType === 'DIRECT_TS') {
+              setLiveModeType('FFMPEG_TS');
+            } else if (errType === window.mpegts?.ErrorTypes?.NETWORK_ERROR) {
+              setStatus('ERROR');
+            }
+          });
 
-              playerRef.current = player;
-              player.attachMediaElement(video);
-              player.load();
-              attemptPlay(player, video);
-
-              if (liveModeType === 'DIRECT_TS') {
-                // Si el canal viene en MPEG2/MP2/AC3 (como Mega SD) y no decodifica en 8.5s, pasar a transcodificador H264+AAC en vivo
-                fallbackTimerRef.current = setTimeout(() => {
-                  if (videoRef.current && videoRef.current.readyState < 2) {
-                    setLiveModeType('FFMPEG_TS');
-                  }
-                }, 8500);
-              }
-
-              player.on(window.mpegts.Events.ERROR, (errType) => {
-                if (video.currentTime > 0 && video.readyState >= 2) return;
-                if (liveModeType === 'DIRECT_TS') {
+          if (attached) {
+            if (liveModeType === 'DIRECT_TS') {
+              fallbackTimerRef.current = setTimeout(() => {
+                if (videoRef.current && videoRef.current.currentTime === 0) {
                   setLiveModeType('FFMPEG_TS');
-                } else if (errType === window.mpegts.ErrorTypes.NETWORK_ERROR) {
-                  setStatus('ERROR');
                 }
-              });
-            } catch (_) {
-              if (liveModeType === 'DIRECT_TS') setLiveModeType('FFMPEG_TS');
-              else setStatus('ERROR');
+              }, 9000);
             }
           } else {
             video.src = liveStreamUrl;
@@ -1773,43 +1793,40 @@
         }
 
         // 2. MODO CINE Y SERIES (VOD)
-        let targetVodUrl = directProxyUrl;
-        if (vodMode === 'TRANSCODE') {
-          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}&transcodeVideo=1`;
-        } else if (vodMode === 'REMUX' || selectedAudioTrack > 0) {
-          targetVodUrl = `${window.location.origin}/api/media/stream?${devParam}&url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}`;
+        const shouldUseMpegtsRemux = vodMode === 'REMUX' || vodMode === 'TRANSCODE' || selectedAudioTrack > 0;
+        if (shouldUseMpegtsRemux) {
+          const needsVideoTranscode = vodMode === 'TRANSCODE' || videoCodecRef.current === 'hevc';
+          const remuxTsUrl = `${window.location.origin}/api/media/stream?url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}${needsVideoTranscode ? '&transcodeVideo=1' : ''}`;
+          const attached = attachMpegtsPlayer(remuxTsUrl, () => {
+            if (!needsVideoTranscode) {
+              setVodMode('TRANSCODE');
+            } else {
+              setStatus('ERROR');
+            }
+          });
+          if (!attached) {
+            video.src = remuxTsUrl;
+            video.load();
+            attemptPlay(video, video);
+          }
+          return;
         }
 
-        video.src = targetVodUrl;
+        // Modo DIRECT (/proxy con soporte Range nativo)
+        video.src = directProxyUrl;
         video.load();
         attemptPlay(video, video);
 
-        // Si en modo directo un archivo MKV/AC3 no decodifica en 6.5 segundos en este TV, pasar a REMUX automáticamente
-        if (vodMode === 'DIRECT' && selectedAudioTrack === 0) {
-          fallbackTimerRef.current = setTimeout(() => {
-            if (videoRef.current && videoRef.current.readyState < 2) {
-              setVodMode('REMUX');
-            }
-          }, 6500);
-        }
+        fallbackTimerRef.current = setTimeout(() => {
+          if (videoRef.current && videoRef.current.currentTime === 0 && vodMode === 'DIRECT') {
+            setVodMode(videoCodecRef.current === 'hevc' ? 'TRANSCODE' : 'REMUX');
+          }
+        }, 7000);
       };
 
       useEffect(() => {
         const video = videoRef.current;
         if (!video) return;
-
-        const syncLiveBufferPosition = () => {
-          if (!(isLiveMode || item?.type === 'LIVE')) return;
-          try {
-            if (video.buffered && video.buffered.length > 0) {
-              const start = video.buffered.start(0);
-              if (video.currentTime < start - 0.5) {
-                video.currentTime = start + 0.1;
-                attemptPlay(video, video);
-              }
-            }
-          } catch (_) {}
-        };
 
         const handlePlaying = () => {
           if (fallbackTimerRef.current) {
@@ -1817,17 +1834,6 @@
             fallbackTimerRef.current = null;
           }
           setStatus('PLAYING');
-        };
-        const handleCanPlay = () => {
-          if (fallbackTimerRef.current) {
-            clearTimeout(fallbackTimerRef.current);
-            fallbackTimerRef.current = null;
-          }
-          syncLiveBufferPosition();
-          setStatus('PLAYING');
-        };
-        const handleProgress = () => {
-          syncLiveBufferPosition();
         };
         const handleTimeUpdate = () => {
           if (video.currentTime > 0) {
@@ -1848,7 +1854,7 @@
             }
           } else {
             if (vodMode === 'DIRECT') {
-              setVodMode('REMUX');
+              setVodMode(videoCodecRef.current === 'hevc' ? 'TRANSCODE' : 'REMUX');
             } else if (vodMode === 'REMUX') {
               setVodMode('TRANSCODE');
             } else {
@@ -1858,9 +1864,6 @@
         };
 
         video.addEventListener('playing', handlePlaying);
-        video.addEventListener('canplay', handleCanPlay);
-        video.addEventListener('progress', handleProgress);
-        video.addEventListener('loadedmetadata', handleProgress);
         video.addEventListener('timeupdate', handleTimeUpdate);
         video.addEventListener('error', handleError);
 
@@ -1870,9 +1873,6 @@
 
         return () => {
           video.removeEventListener('playing', handlePlaying);
-          video.removeEventListener('canplay', handleCanPlay);
-          video.removeEventListener('progress', handleProgress);
-          video.removeEventListener('loadedmetadata', handleProgress);
           video.removeEventListener('timeupdate', handleTimeUpdate);
           video.removeEventListener('error', handleError);
           window.removeEventListener('pagehide', handleUnload);
@@ -1887,7 +1887,7 @@
 
       const handleSelectAudioTrack = (idx) => {
         setSelectedAudioTrack(idx);
-        if (vodMode === 'TRANSCODE' || minRequiredModeRef.current === 'TRANSCODE') {
+        if (vodMode === 'TRANSCODE' || minRequiredModeRef.current === 'TRANSCODE' || videoCodecRef.current === 'hevc') {
           setVodMode('TRANSCODE');
         } else if (idx > 0 || minRequiredModeRef.current === 'REMUX') {
           setVodMode('REMUX');

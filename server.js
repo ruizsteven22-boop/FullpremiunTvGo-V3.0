@@ -920,21 +920,11 @@ app.get('/api/media/stop', (req, res) => {
 
 function handleStreamProxy(req, res) {
   const targetUrl = (req.query.url || '').toString();
-  const deviceId = (req.query.deviceId || '').toString().trim();
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
   }
 
   const isApiCall = targetUrl.includes('player_api.php') || targetUrl.includes('panel_api.php') || targetUrl.includes('xmltv.php');
-  const isLiveStreamReq = !isApiCall && (targetUrl.includes('/live/') || /\.ts(\?|$)/i.test(targetUrl));
-
-  if (!isApiCall && deviceId) {
-    // Si el usuario pidió un stream directo por /proxy, cerrar cualquier ffmpeg anterior de ese dispositivo
-    killDeviceFfmpeg(deviceId);
-    if (isLiveStreamReq) {
-      killDeviceLiveProxy(deviceId);
-    }
-  }
 
   let activeProxyReq = null;
   let activeProxyRes = null;
@@ -952,15 +942,8 @@ function handleStreamProxy(req, res) {
     }
   };
 
-  if (isLiveStreamReq && deviceId) {
-    activeDeviceLiveProxy.set(deviceId, cleanupProxy);
-  }
-
   res.on('close', () => {
     cleanupProxy();
-    if (isLiveStreamReq && deviceId && activeDeviceLiveProxy.get(deviceId) === cleanupProxy) {
-      activeDeviceLiveProxy.delete(deviceId);
-    }
   });
 
   const proxyStream = (currentUrl, redirectCount = 0) => {
@@ -1207,7 +1190,6 @@ app.get('/api/media/tracks', (req, res) => {
 // 9C. TRANSCODIFICADOR EN VIVO MPEG-TS (CONVIERTE CANALES MPEG2VIDEO/MP2/AC3 A H.264 + AAC PARA MPEGTS.JS)
 app.get('/api/media/live-ts', (req, res) => {
   const targetUrl = (req.query.url || '').toString().trim();
-  const deviceId = (req.query.deviceId || '').toString().trim();
 
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
@@ -1224,11 +1206,6 @@ app.get('/api/media/live-ts', (req, res) => {
   }
   if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
     return res.status(403).type('text/plain').send('Destino no permitido');
-  }
-
-  if (deviceId) {
-    killDeviceLiveProxy(deviceId);
-    killDeviceFfmpeg(deviceId);
   }
 
   const args = [
@@ -1280,23 +1257,13 @@ app.get('/api/media/live-ts', (req, res) => {
     try { proc.kill('SIGKILL'); } catch (_) {}
   };
 
-  if (deviceId) {
-    activeDeviceFfmpeg.set(deviceId, killProc);
-  }
-
-  res.on('close', () => {
-    killProc();
-    if (deviceId && activeDeviceFfmpeg.get(deviceId) === killProc) {
-      activeDeviceFfmpeg.delete(deviceId);
-    }
-  });
+  res.on('close', killProc);
   proc.on('error', killProc);
 });
 
-// 9D. STREAMING UNIVERSAL REMUX MATROSKA CON FFMPEG (CAMBIO DE PISTA DE AUDIO DUAL / AC3 / COMPATIBILIDAD 4K)
+// 9D. STREAMING UNIVERSAL REMUX MPEG-TS CON FFMPEG (CAMBIO DE PISTA DE AUDIO DUAL / AC3 / SUBTÍTULOS PGS PARA MPEGTS.JS)
 app.get('/api/media/stream', (req, res) => {
   const targetUrl = (req.query.url || '').toString().trim();
-  const deviceId = (req.query.deviceId || '').toString().trim();
   const audioTrack = Math.max(0, parseInt(req.query.audioTrack || '0', 10) || 0);
   const startSec = Math.max(0, parseFloat(req.query.start || '0') || 0);
   const transcodeVideo = req.query.transcodeVideo === '1';
@@ -1318,14 +1285,10 @@ app.get('/api/media/stream', (req, res) => {
     return res.status(403).type('text/plain').send('Destino no permitido');
   }
 
-  if (deviceId) {
-    killDeviceLiveProxy(deviceId);
-    killDeviceFfmpeg(deviceId);
-  }
-
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
+    '-threads', '2',
     '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
@@ -1354,12 +1317,15 @@ app.get('/api/media/stream', (req, res) => {
       '-preset', 'ultrafast',
       '-vf', 'scale=1280:-2,format=yuv420p',
       '-g', '48',
-      '-b:v', '2500k',
-      '-maxrate', '2800k',
-      '-bufsize', '5600k'
+      '-b:v', '2200k',
+      '-maxrate', '2500k',
+      '-bufsize', '5000k'
     );
   } else {
-    args.push('-c:v', 'copy');
+    args.push(
+      '-c:v', 'copy',
+      '-bsf:v', 'h264_mp4toannexb'
+    );
   }
 
   args.push(
@@ -1367,14 +1333,14 @@ app.get('/api/media/stream', (req, res) => {
     '-ac', '2',
     '-ar', '48000',
     '-b:a', '160k',
-    '-f', 'matroska',
+    '-f', 'mpegts',
     'pipe:1'
   );
 
   res.writeHead(200, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': '*',
-    'Content-Type': 'video/x-matroska',
+    'Content-Type': 'video/mp2t',
     'Cache-Control': 'no-cache, no-store, must-revalidate',
     'Connection': 'close',
     'X-Accel-Buffering': 'no'
@@ -1390,16 +1356,7 @@ app.get('/api/media/stream', (req, res) => {
     try { proc.kill('SIGKILL'); } catch (_) {}
   };
 
-  if (deviceId) {
-    activeDeviceFfmpeg.set(deviceId, killProc);
-  }
-
-  res.on('close', () => {
-    killProc();
-    if (deviceId && activeDeviceFfmpeg.get(deviceId) === killProc) {
-      activeDeviceFfmpeg.delete(deviceId);
-    }
-  });
+  res.on('close', killProc);
   proc.on('error', killProc);
 });
 

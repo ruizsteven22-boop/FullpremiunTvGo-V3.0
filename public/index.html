@@ -363,6 +363,9 @@
         }
       };
 
+      const APP_VERSION = '4.7';
+      const connectingRef = useRef(false);
+
       const fetchJsonViaProxy = async (actionUrl) => {
         const res = await fetch(`/proxy?url=${encodeURIComponent(actionUrl)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -370,6 +373,8 @@
       };
 
       const connectWithPlaylist = async (pl) => {
+        if (connectingRef.current) return;
+        connectingRef.current = true;
         setLoading(true);
         try {
           let targetType = pl.type;
@@ -394,29 +399,23 @@
 
           const baseApi = `${finalHost}/player_api.php?username=${encodeURIComponent(targetUser)}&password=${encodeURIComponent(targetPass)}`;
 
-          setLoadingStatus('Cargando categorías...');
-          const [liveCats, vodCats, serCats] = await Promise.all([
+          // FASE 1 ULTRA-RÁPIDA: Cargar categorías y canales en vivo primero para entrar en ~1 segundo
+          setLoadingStatus('Cargando canales en vivo...');
+          const [liveCats, liveData] = await Promise.all([
             fetchJsonViaProxy(`${baseApi}&action=get_live_categories`).catch(() => []),
-            fetchJsonViaProxy(`${baseApi}&action=get_vod_categories`).catch(() => []),
-            fetchJsonViaProxy(`${baseApi}&action=get_series_categories`).catch(() => [])
+            fetchJsonViaProxy(`${baseApi}&action=get_live_streams`).catch(() => [])
           ]);
 
           const liveCatMap = {};
-          const vodCatMap = {};
-          const serCatMap = {};
+          if (Array.isArray(liveCats)) {
+            liveCats.forEach(c => { liveCatMap[String(c.category_id)] = c.category_name; });
+          }
 
-          if (Array.isArray(liveCats)) liveCats.forEach(c => { liveCatMap[String(c.category_id)] = c.category_name; });
-          if (Array.isArray(vodCats)) vodCats.forEach(c => { vodCatMap[String(c.category_id)] = c.category_name; });
-          if (Array.isArray(serCats)) serCats.forEach(c => { serCatMap[String(c.category_id)] = c.category_name; });
+          setCategories(prev => ({
+            ...prev,
+            LIVE: Array.isArray(liveCats) ? liveCats : []
+          }));
 
-          setCategories({
-            LIVE: Array.isArray(liveCats) ? liveCats : [],
-            MOVIES: Array.isArray(vodCats) ? vodCats : [],
-            SERIES: Array.isArray(serCats) ? serCats : []
-          });
-
-          setLoadingStatus('Cargando canales en vivo...');
-          const liveData = await fetchJsonViaProxy(`${baseApi}&action=get_live_streams`);
           if (Array.isArray(liveData)) {
             const mappedLive = liveData.map((ch, idx) => ({
               type: 'LIVE',
@@ -432,12 +431,34 @@
             setLiveCatalog(mappedLive);
           }
 
-          setLoadingStatus('Cargando catálogo de Cine y Series...');
-          const [moviesData, seriesData] = await Promise.all([
-            fetchJsonViaProxy(`${baseApi}&action=get_vod_streams`).catch(() => []),
-            fetchJsonViaProxy(`${baseApi}&action=get_series`).catch(() => [])
+          // Entrar inmediatamente a la interfaz de TV sin esperar los 13 MB de películas y series
+          setAuth(true);
+          setLoading(false);
+          setLoadingStatus('');
+          try {
+            if (pl && typeof pl === 'object') {
+              localStorage.setItem('tvgo_saved_playlist', JSON.stringify(pl));
+            }
+          } catch (_) {}
+
+          // FASE 2 EN SEGUNDO PLANO: Cargar Cine y Series secuencialmente (comprimidos con Gzip desde la caché del servidor)
+          const [vodCats, serCats] = await Promise.all([
+            fetchJsonViaProxy(`${baseApi}&action=get_vod_categories`).catch(() => []),
+            fetchJsonViaProxy(`${baseApi}&action=get_series_categories`).catch(() => [])
           ]);
 
+          const vodCatMap = {};
+          const serCatMap = {};
+          if (Array.isArray(vodCats)) vodCats.forEach(c => { vodCatMap[String(c.category_id)] = c.category_name; });
+          if (Array.isArray(serCats)) serCats.forEach(c => { serCatMap[String(c.category_id)] = c.category_name; });
+
+          setCategories({
+            LIVE: Array.isArray(liveCats) ? liveCats : [],
+            MOVIES: Array.isArray(vodCats) ? vodCats : [],
+            SERIES: Array.isArray(serCats) ? serCats : []
+          });
+
+          const moviesData = await fetchJsonViaProxy(`${baseApi}&action=get_vod_streams`).catch(() => []);
           if (Array.isArray(moviesData)) {
             const normMovieKey = (t) => (t || '').replace(/\(\s*4k\s*\)|\(\s*uhd\s*\)|\(\s*2160p\s*\)|\b4k\b/gi, '').replace(/\s+/g, ' ').trim().toLowerCase();
             const fhdByTitle = {};
@@ -476,6 +497,7 @@
             }));
           }
 
+          const seriesData = await fetchJsonViaProxy(`${baseApi}&action=get_series`).catch(() => []);
           if (Array.isArray(seriesData)) {
             setSeriesCatalog(seriesData.map((s, idx) => ({
               type: 'SERIE',
@@ -487,16 +509,10 @@
               categoryName: serCatMap[String(s.category_id || '')] || 'Series'
             })));
           }
-
-          setAuth(true);
-          try {
-            if (pl && typeof pl === 'object') {
-              localStorage.setItem('tvgo_saved_playlist', JSON.stringify(pl));
-            }
-          } catch (_) {}
         } catch (err) {
           alert('Error al conectar con la lista: ' + err.message);
         } finally {
+          connectingRef.current = false;
           setLoading(false);
           setLoadingStatus('');
         }
@@ -534,6 +550,10 @@
             })
           });
           const data = await res.json();
+          if (data.serverVersion && data.serverVersion !== APP_VERSION) {
+            window.location.replace('/?_v=' + Date.now());
+            return;
+          }
           if (data.devicePin) {
             setDevicePin(data.devicePin);
             localStorage.setItem('tvgo_device_pin', data.devicePin);
@@ -564,12 +584,12 @@
           }
 
           const effectivePlaylist = data.playlist || (!data.playlistCleared ? savedPlaylist : null);
-          if (effectivePlaylist && data.access?.allowed !== false && autoConnect && !authRef.current) {
+          if (effectivePlaylist && data.access?.allowed !== false && autoConnect && !authRef.current && !connectingRef.current) {
             connectWithPlaylist(effectivePlaylist);
           }
         } catch (_) {
           // Si el servidor está reiniciando durante un despliegue, mantener la lista ya cargada localmente
-          if (savedPlaylist && autoConnect && !authRef.current) {
+          if (savedPlaylist && autoConnect && !authRef.current && !connectingRef.current) {
             connectWithPlaylist(savedPlaylist);
           }
         }
@@ -876,7 +896,7 @@
                     Full Premium <span className="text-cyan-300">TvGo</span>
                   </span>
                   <span className="px-1.5 py-0.2 rounded bg-cyan-500/20 border border-cyan-400/40 text-[9px] font-mono font-black text-cyan-300">
-                    v4.6
+                    v4.7
                   </span>
                   {auth && (
                     <span className="text-slate-400 text-xs font-semibold hidden sm:inline">
@@ -1549,8 +1569,9 @@
       );
     }
 
-    // REPRODUCTOR UNIVERSAL SMART TV (LIVE TS + LIVE FFMPEG H264 FALLBACK + VOD NATIVO + CAMBIO DE AUDIO MATROSKA)
+    // REPRODUCTOR UNIVERSAL SMART TV v4.7 (LIVE TS + CODEC AUTO-DETECT 200MS + VOD FRAGMENTED MP4 NATIVO + CAMBIO DE AUDIO)
     const BLACK_POSTER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=';
+    const liveTranscodeIds = new Set();
 
     function VideoPlayer({ item, isLiveMode, deviceId }) {
       const videoRef = useRef(null);
@@ -1559,15 +1580,17 @@
       const fallbackTimerRef = useRef(null);
       const minRequiredModeRef = useRef('DIRECT');
       const videoCodecRef = useRef('h264');
+      const playIdRef = useRef('');
+      const didInitialSeekRef = useRef(false);
 
       const [status, setStatus] = useState('IDLE');
       const [needsUnmute, setNeedsUnmute] = useState(false);
       const [audioTracks, setAudioTracks] = useState([]);
       const [selectedAudioTrack, setSelectedAudioTrack] = useState(0);
       const [useFhdCompat, setUseFhdCompat] = useState(true);
-      // vodMode: 'DIRECT' (/proxy nativo con Range) | 'REMUX' (FFmpeg -c:v copy -c:a aac -f mpegts via mpegts.js) | 'TRANSCODE' (FFmpeg H264 + AAC -f mpegts via mpegts.js)
+      // vodMode: 'DIRECT' (/proxy MP4 nativo) | 'REMUX' (Fragmented MP4 -c:v copy -c:a aac nativo en <video>) | 'TRANSCODE' (Fragmented MP4 H.264 + AAC)
       const [vodMode, setVodMode] = useState('DIRECT');
-      // liveModeType: 'DIRECT_TS' (mpegts.js directo) | 'FFMPEG_TS' (FFmpeg H264+AAC MPEG-TS para canales MPEG2/MP2/AC3 como Mega SD)
+      // liveModeType: 'DIRECT_TS' (mpegts.js directo) | 'FFMPEG_TS' (FFmpeg H264+AAC MPEG-TS para canales MPEG2/MP2/AC3)
       const [liveModeType, setLiveModeType] = useState('DIRECT_TS');
 
       const activeStreamUrl = useMemo(() => {
@@ -1577,6 +1600,10 @@
       }, [item, useFhdCompat]);
 
       const cleanup = () => {
+        const oldPlayId = playIdRef.current;
+        if (oldPlayId && deviceId) {
+          fetch(`/api/media/stop?deviceId=${encodeURIComponent(deviceId)}&playId=${encodeURIComponent(oldPlayId)}`).catch(() => {});
+        }
         if (fallbackTimerRef.current) {
           clearTimeout(fallbackTimerRef.current);
           fallbackTimerRef.current = null;
@@ -1619,7 +1646,7 @@
         }
       };
 
-      const attachMpegtsPlayer = (streamUrl, onFatalError) => {
+      const attachMpegtsPlayer = (streamUrl, onFatalError, onMediaInfo) => {
         const video = videoRef.current;
         if (!video || !window.mpegts || !window.mpegts.isSupported()) return false;
         try {
@@ -1631,7 +1658,7 @@
             enableWorker: true,
             lazyLoad: false,
             enableStashBuffer: true,
-            stashInitialSize: 256 * 1024,
+            stashInitialSize: 64 * 1024,
             liveBufferLatencyChasing: false,
             autoCleanupSourceBuffer: true,
             autoCleanupMaxBackwardDuration: 30,
@@ -1642,6 +1669,10 @@
           player.attachMediaElement(video);
           player.load();
           attemptPlay(player, video);
+
+          if (typeof onMediaInfo === 'function' && window.mpegts.Events.MEDIA_INFO) {
+            player.on(window.mpegts.Events.MEDIA_INFO, onMediaInfo);
+          }
 
           player.on(window.mpegts.Events.ERROR, (errType) => {
             if (video.currentTime > 0 && video.readyState >= 2) return;
@@ -1658,6 +1689,8 @@
       useEffect(() => {
         minRequiredModeRef.current = 'DIRECT';
         videoCodecRef.current = 'h264';
+        didInitialSeekRef.current = false;
+
         if (!item?.streamUrl) {
           setAudioTracks([]);
           setSelectedAudioTrack(0);
@@ -1670,12 +1703,22 @@
         const isDualTitle = /dual/i.test(item.title || '');
         const targetUrlToPlay = (useFhdCompat && item.fhdStreamUrl) ? item.fhdStreamUrl : item.streamUrl;
         const isAvi = item.ext === 'avi' || /\.avi(\?|$)/i.test(targetUrlToPlay);
+        const isMkv = item.ext === 'mkv' || /\.mkv(\?|$)/i.test(targetUrlToPlay);
         const isUnlinked4k = (/4k|2160p/i.test(item.title || '') || /4k/i.test(item.categoryName || '')) && !(useFhdCompat && item.fhdStreamUrl);
 
         setSelectedAudioTrack(0);
-        setLiveModeType('DIRECT_TS');
 
-        const initialVodMode = (isAvi || isUnlinked4k) ? 'TRANSCODE' : 'DIRECT';
+        // Para TV en Vivo: canales SD (usualmente MPEG-2/MP2) o ya identificados van directo a FFMPEG_TS sin esperar
+        const isSdChannel = /\bSD\b/i.test(item.title || '');
+        const initialLiveMode = (liveTranscodeIds.has(item.id) || isSdChannel) ? 'FFMPEG_TS' : 'DIRECT_TS';
+        setLiveModeType(initialLiveMode);
+
+        // Para Cine y Series: archivos .mkv o DUAL inician inmediatamente en REMUX (Fragmented MP4 nativo) sin perder tiempo ni conexiones en DIRECT
+        const initialVodMode = (isAvi || isUnlinked4k)
+          ? 'TRANSCODE'
+          : (isMkv || isDualTitle)
+            ? 'REMUX'
+            : 'DIRECT';
         minRequiredModeRef.current = initialVodMode;
         setVodMode(initialVodMode);
 
@@ -1690,6 +1733,7 @@
           }
 
           let cancelled = false;
+          // Consultar pistas detectadas por el servidor (desde mediaTracksCache sin abrir conexión extra a Xtream)
           const probeTimer = setTimeout(() => {
             fetch(`/api/media/tracks?url=${encodeURIComponent(targetUrlToPlay)}`)
               .then(r => r.ok ? r.json() : null)
@@ -1701,21 +1745,13 @@
                 if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
                   setAudioTracks(data.audioTracks);
                 }
-                const firstCodec = (data.audioTracks?.[0]?.codec || '').toLowerCase();
-                const needsAudioRemux = ['ac3', 'eac3', 'dts', 'truehd', 'flac', 'mp2'].includes(firstCodec);
-                const isHevcOr10Bit = data.videoWidth > 1920 || data.is10Bit || videoCodecRef.current === 'hevc';
-
                 if (data.videoWidth > 1920) {
                   minRequiredModeRef.current = 'TRANSCODE';
                   setVodMode('TRANSCODE');
-                } else if (data.hasIncompatibleSubs || needsAudioRemux) {
-                  const nextMode = isHevcOr10Bit ? 'TRANSCODE' : 'REMUX';
-                  minRequiredModeRef.current = nextMode;
-                  setVodMode((prev) => (prev === 'DIRECT' ? nextMode : prev));
                 }
               })
               .catch(() => {});
-          }, 600);
+          }, 900);
 
           return () => {
             cancelled = true;
@@ -1732,6 +1768,10 @@
           setStatus('IDLE');
           return;
         }
+        const playId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        playIdRef.current = playId;
+        didInitialSeekRef.current = false;
+
         setStatus('LOADING');
         setNeedsUnmute(false);
 
@@ -1739,7 +1779,8 @@
         video.muted = false;
         video.volume = 1.0;
 
-        const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(activeStreamUrl)}`;
+        const sessionQuery = `&deviceId=${encodeURIComponent(deviceId || '')}&playId=${encodeURIComponent(playId)}`;
+        const directProxyUrl = `${window.location.origin}/proxy?url=${encodeURIComponent(activeStreamUrl)}${sessionQuery}`;
 
         // 1. MODO TV EN VIVO (LIVE)
         if (isLiveMode || item.type === 'LIVE') {
@@ -1765,24 +1806,42 @@
           }
 
           const liveStreamUrl = liveModeType === 'FFMPEG_TS'
-            ? `${window.location.origin}/api/media/live-ts?url=${encodeURIComponent(activeStreamUrl)}`
+            ? `${window.location.origin}/api/media/live-ts?url=${encodeURIComponent(activeStreamUrl)}${sessionQuery}`
             : directProxyUrl;
 
-          const attached = attachMpegtsPlayer(liveStreamUrl, (errType) => {
-            if (liveModeType === 'DIRECT_TS') {
-              setLiveModeType('FFMPEG_TS');
-            } else if (errType === window.mpegts?.ErrorTypes?.NETWORK_ERROR) {
-              setStatus('ERROR');
+          const attached = attachMpegtsPlayer(
+            liveStreamUrl,
+            (errType) => {
+              if (liveModeType === 'DIRECT_TS') {
+                if (item?.id) liveTranscodeIds.add(item.id);
+                setLiveModeType('FFMPEG_TS');
+              } else if (errType === window.mpegts?.ErrorTypes?.NETWORK_ERROR) {
+                setStatus('ERROR');
+              }
+            },
+            (info) => {
+              // Detección instantánea (~200ms): si el canal en DIRECT_TS tiene audio MP2/AC3 (no AAC) o video MPEG-2, cambiar de inmediato a FFMPEG_TS
+              if (liveModeType === 'DIRECT_TS' && info) {
+                const vCodec = (info.videoCodec || '').toLowerCase();
+                const aCodec = (info.audioCodec || '').toLowerCase();
+                const badVideo = !vCodec || !vCodec.includes('avc1');
+                const badAudio = info.hasAudio !== false && (!aCodec || !aCodec.includes('mp4a'));
+                if (badVideo || badAudio) {
+                  if (item?.id) liveTranscodeIds.add(item.id);
+                  setLiveModeType('FFMPEG_TS');
+                }
+              }
             }
-          });
+          );
 
           if (attached) {
             if (liveModeType === 'DIRECT_TS') {
               fallbackTimerRef.current = setTimeout(() => {
-                if (videoRef.current && videoRef.current.currentTime === 0) {
+                if (videoRef.current && (videoRef.current.currentTime === 0 || videoRef.current.readyState < 2)) {
+                  if (item?.id) liveTranscodeIds.add(item.id);
                   setLiveModeType('FFMPEG_TS');
                 }
-              }, 9000);
+              }, 3800);
             }
           } else {
             video.src = liveStreamUrl;
@@ -1792,41 +1851,57 @@
           return;
         }
 
-        // 2. MODO CINE Y SERIES (VOD)
-        const shouldUseMpegtsRemux = vodMode === 'REMUX' || vodMode === 'TRANSCODE' || selectedAudioTrack > 0;
-        if (shouldUseMpegtsRemux) {
-          const needsVideoTranscode = vodMode === 'TRANSCODE' || videoCodecRef.current === 'hevc';
-          const remuxTsUrl = `${window.location.origin}/api/media/stream?url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}${needsVideoTranscode ? '&transcodeVideo=1' : ''}`;
-          const attached = attachMpegtsPlayer(remuxTsUrl, () => {
-            if (!needsVideoTranscode) {
-              setVodMode('TRANSCODE');
-            } else {
-              setStatus('ERROR');
-            }
-          });
-          if (!attached) {
-            video.src = remuxTsUrl;
-            video.load();
-            attemptPlay(video, video);
+        // 2. MODO CINE Y SERIES (VOD EN FRAGMENTED MP4 NATIVO O PROXY DIRECTO)
+        const shouldUseFmp4Stream = vodMode === 'REMUX' || vodMode === 'TRANSCODE' || selectedAudioTrack > 0;
+        if (shouldUseFmp4Stream) {
+          const needsVideoTranscode = vodMode === 'TRANSCODE';
+          const fmp4Url = `${window.location.origin}/api/media/stream?url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}${needsVideoTranscode ? '&transcodeVideo=1' : ''}${sessionQuery}`;
+          video.src = fmp4Url;
+          video.load();
+          attemptPlay(video, video);
+
+          if (!needsVideoTranscode) {
+            fallbackTimerRef.current = setTimeout(() => {
+              if (videoRef.current && videoRef.current.currentTime === 0 && vodMode === 'REMUX') {
+                setVodMode('TRANSCODE');
+              }
+            }, 5500);
           }
           return;
         }
 
-        // Modo DIRECT (/proxy con soporte Range nativo)
+        // Modo DIRECT (/proxy con soporte Range nativo sólo para archivos MP4 estándar)
         video.src = directProxyUrl;
         video.load();
         attemptPlay(video, video);
 
         fallbackTimerRef.current = setTimeout(() => {
           if (videoRef.current && videoRef.current.currentTime === 0 && vodMode === 'DIRECT') {
-            setVodMode(videoCodecRef.current === 'hevc' ? 'TRANSCODE' : 'REMUX');
+            setVodMode('REMUX');
           }
-        }, 7000);
+        }, 3800);
       };
 
       useEffect(() => {
         const video = videoRef.current;
         if (!video) return;
+
+        const handleProgress = () => {
+          // Salto único de PTS para canales en vivo cuyo timestamp inicial es el uptime del servidor (ej. 12140.06s)
+          if ((isLiveMode || item?.type === 'LIVE') && !didInitialSeekRef.current && video.buffered && video.buffered.length > 0) {
+            const start = video.buffered.start(0);
+            const end = video.buffered.end(0);
+            if (end - start >= 0.25) {
+              didInitialSeekRef.current = true;
+              if (video.currentTime < start || video.currentTime > end) {
+                try {
+                  video.currentTime = start + 0.1;
+                } catch (_) {}
+              }
+              attemptPlay(video, video);
+            }
+          }
+        };
 
         const handlePlaying = () => {
           if (fallbackTimerRef.current) {
@@ -1848,13 +1923,14 @@
           if (!video.getAttribute('src') && !playerRef.current) return;
           if (isLiveMode || item?.type === 'LIVE') {
             if (liveModeType === 'DIRECT_TS') {
+              if (item?.id) liveTranscodeIds.add(item.id);
               setLiveModeType('FFMPEG_TS');
             } else {
               setStatus('ERROR');
             }
           } else {
             if (vodMode === 'DIRECT') {
-              setVodMode(videoCodecRef.current === 'hevc' ? 'TRANSCODE' : 'REMUX');
+              setVodMode('REMUX');
             } else if (vodMode === 'REMUX') {
               setVodMode('TRANSCODE');
             } else {
@@ -1863,6 +1939,7 @@
           }
         };
 
+        video.addEventListener('progress', handleProgress);
         video.addEventListener('playing', handlePlaying);
         video.addEventListener('timeupdate', handleTimeUpdate);
         video.addEventListener('error', handleError);
@@ -1872,6 +1949,7 @@
         window.addEventListener('beforeunload', handleUnload);
 
         return () => {
+          video.removeEventListener('progress', handleProgress);
           video.removeEventListener('playing', handlePlaying);
           video.removeEventListener('timeupdate', handleTimeUpdate);
           video.removeEventListener('error', handleError);
@@ -1887,9 +1965,9 @@
 
       const handleSelectAudioTrack = (idx) => {
         setSelectedAudioTrack(idx);
-        if (vodMode === 'TRANSCODE' || minRequiredModeRef.current === 'TRANSCODE' || videoCodecRef.current === 'hevc') {
+        if (vodMode === 'TRANSCODE' || minRequiredModeRef.current === 'TRANSCODE') {
           setVodMode('TRANSCODE');
-        } else if (idx > 0 || minRequiredModeRef.current === 'REMUX') {
+        } else if (idx > 0 || minRequiredModeRef.current === 'REMUX' || vodMode === 'REMUX') {
           setVodMode('REMUX');
         } else {
           setVodMode('DIRECT');

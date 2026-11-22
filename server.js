@@ -6,9 +6,12 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const net = require('net');
+const zlib = require('zlib');
 const { spawn } = require('child_process');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+
+const SERVER_APP_VERSION = '4.7';
 
 let ffmpegPath = null;
 try {
@@ -503,6 +506,7 @@ app.post('/api/device/init', deviceSyncLimiter, (req, res) => {
     const access = computeAccess(device, db.settings);
 
     return res.status(200).json({
+      serverVersion: SERVER_APP_VERSION,
       deviceId: device.deviceId,
       devicePin: device.devicePin,
       deviceModel: device.deviceModel,
@@ -532,6 +536,7 @@ app.get('/api/device/config', deviceSyncLimiter, (req, res) => {
   if (!device) return res.status(404).json({ error: 'Dispositivo no encontrado' });
 
   return res.status(200).json({
+    serverVersion: SERVER_APP_VERSION,
     deviceId: device.deviceId,
     devicePin: device.devicePin,
     deviceModel: device.deviceModel,
@@ -887,44 +892,260 @@ async function handleMercadoPagoWebhook(req, res) {
 app.all('/api/webhooks/mercadopago', handleMercadoPagoWebhook);
 app.all('/api/webhook/mercadopago', handleMercadoPagoWebhook);
 
-// 9. GESTOR DE PROCESOS Y PROXY ULTRA RÁPIDO PARA STREAMING
-const activeDeviceFfmpeg = new Map();
-const activeDeviceLiveProxy = new Map();
+// 9. GESTOR DE PROCESOS, CACHÉ GZIP DE CATÁLOGO Y PROXY ULTRA RÁPIDO PARA STREAMING
+const API_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos en RAM
+const apiResponseCache = new Map();
+const apiInFlight = new Map();
+const mediaTracksCache = new Map();
+const deviceSessions = new Map(); // deviceId -> { playId, cleanups: Set<Function> }
 
-function killDeviceFfmpeg(deviceId) {
-  if (!deviceId) return;
-  const prev = activeDeviceFfmpeg.get(deviceId);
-  if (prev && typeof prev === 'function') {
-    try { prev(); } catch (_) {}
+function registerDeviceStream(deviceId, playId, cleanupFn) {
+  if (!deviceId || typeof cleanupFn !== 'function') return () => {};
+  const current = deviceSessions.get(deviceId);
+  if (current) {
+    if (!playId || current.playId !== playId) {
+      for (const fn of current.cleanups) {
+        try { fn(); } catch (_) {}
+      }
+      current.cleanups.clear();
+      current.playId = playId || `${Date.now()}`;
+    }
+    current.cleanups.add(cleanupFn);
+  } else {
+    deviceSessions.set(deviceId, {
+      playId: playId || `${Date.now()}`,
+      cleanups: new Set([cleanupFn])
+    });
   }
-  activeDeviceFfmpeg.delete(deviceId);
+  return () => {
+    const s = deviceSessions.get(deviceId);
+    if (s) {
+      s.cleanups.delete(cleanupFn);
+    }
+  };
 }
 
-function killDeviceLiveProxy(deviceId) {
+function stopDeviceStreams(deviceId, onlyPlayId = '') {
   if (!deviceId) return;
-  const prev = activeDeviceLiveProxy.get(deviceId);
-  if (prev && typeof prev === 'function') {
-    try { prev(); } catch (_) {}
+  const current = deviceSessions.get(deviceId);
+  if (!current) return;
+  if (onlyPlayId && current.playId && current.playId !== onlyPlayId) return;
+  for (const fn of current.cleanups) {
+    try { fn(); } catch (_) {}
   }
-  activeDeviceLiveProxy.delete(deviceId);
+  current.cleanups.clear();
 }
 
 app.get('/api/media/stop', (req, res) => {
   const deviceId = (req.query.deviceId || '').toString().trim();
+  const playId = (req.query.playId || '').toString().trim();
   if (deviceId) {
-    killDeviceFfmpeg(deviceId);
-    killDeviceLiveProxy(deviceId);
+    stopDeviceStreams(deviceId, playId);
   }
   return res.status(200).json({ ok: true });
 });
 
+function sendCachedApiResponse(req, res, entry) {
+  const acceptEnc = (req.headers['accept-encoding'] || '').toString();
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Content-Type', entry.contentType || 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  if (entry.gzipBuf && /\bgzip\b/i.test(acceptEnc)) {
+    res.setHeader('Content-Encoding', 'gzip');
+    res.setHeader('Content-Length', String(entry.gzipBuf.length));
+    return res.status(200).end(entry.gzipBuf);
+  }
+  res.setHeader('Content-Length', String(entry.rawBuf.length));
+  return res.status(200).end(entry.rawBuf);
+}
+
+function fetchUpstreamBuffer(startUrl, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 6) return reject(new Error('Demasiadas redirecciones'));
+    let parsedTarget;
+    try {
+      parsedTarget = new URL(startUrl);
+    } catch (_) {
+      return reject(new Error('URL inválida'));
+    }
+    if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
+      return reject(new Error('Destino no permitido'));
+    }
+
+    const client = parsedTarget.protocol === 'https:' ? https : http;
+    const uReq = client.get(startUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json, */*',
+        'Connection': 'close'
+      },
+      timeout: 22000
+    }, (uRes) => {
+      if ([301, 302, 303, 307, 308].includes(uRes.statusCode) && uRes.headers.location) {
+        uRes.resume();
+        const nextUrl = new URL(uRes.headers.location, startUrl).toString();
+        return fetchUpstreamBuffer(nextUrl, redirectCount + 1).then(resolve, reject);
+      }
+      if (uRes.statusCode !== 200) {
+        uRes.resume();
+        return reject(new Error(`HTTP ${uRes.statusCode}`));
+      }
+      const chunks = [];
+      uRes.on('data', (c) => chunks.push(c));
+      uRes.on('end', () => {
+        const rawBuf = Buffer.concat(chunks);
+        const contentType = uRes.headers['content-type'] || 'application/json; charset=utf-8';
+        zlib.gzip(rawBuf, (err, gzipBuf) => {
+          resolve({
+            rawBuf,
+            gzipBuf: err ? null : gzipBuf,
+            contentType,
+            cachedAt: Date.now()
+          });
+        });
+      });
+      uRes.on('error', reject);
+    });
+
+    uReq.on('timeout', () => {
+      try { uReq.destroy(new Error('Timeout upstream API')); } catch (_) {}
+    });
+    uReq.on('error', reject);
+  });
+}
+
+function openUpstreamStream(rootUrl, customHeaders = {}, onReady, attempt = 0) {
+  let currentReq = null;
+  let currentRes = null;
+  let aborted = false;
+
+  const destroyAll = () => {
+    aborted = true;
+    if (currentRes) {
+      try { currentRes.destroy(); } catch (_) {}
+      currentRes = null;
+    }
+    if (currentReq) {
+      try { currentReq.destroy(); } catch (_) {}
+      currentReq = null;
+    }
+  };
+
+  const follow = (targetUrl, redirectCount = 0) => {
+    if (aborted) return;
+    if (redirectCount > 6) {
+      return onReady(new Error('Demasiadas redirecciones'));
+    }
+    let parsedTarget;
+    try {
+      parsedTarget = new URL(targetUrl);
+    } catch (_) {
+      return onReady(new Error('URL inválida'));
+    }
+    if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
+      return onReady(new Error('Destino no permitido'));
+    }
+
+    const client = parsedTarget.protocol === 'https:' ? https : http;
+    const reqObj = client.get(targetUrl, {
+      headers: {
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+        'Accept': '*/*',
+        'Connection': 'close',
+        ...customHeaders
+      }
+    }, (resObj) => {
+      clearTimeout(connectTimer);
+      if (aborted) {
+        try { resObj.destroy(); } catch (_) {}
+        return;
+      }
+      if ([301, 302, 303, 307, 308].includes(resObj.statusCode) && resObj.headers.location) {
+        resObj.resume();
+        const nextUrl = new URL(resObj.headers.location, targetUrl).toString();
+        return follow(nextUrl, redirectCount + 1);
+      }
+      if (resObj.statusCode >= 400 && attempt < 1) {
+        resObj.resume();
+        return setTimeout(() => {
+          if (!aborted) follow(rootUrl, 0);
+        }, 200);
+      }
+      currentRes = resObj;
+      onReady(null, reqObj, resObj, destroyAll);
+    });
+
+    currentReq = reqObj;
+
+    const connectTimer = setTimeout(() => {
+      if (aborted || currentRes) return;
+      try { reqObj.destroy(new Error('Upstream connect timeout')); } catch (_) {}
+    }, 5000);
+
+    reqObj.on('error', (err) => {
+      clearTimeout(connectTimer);
+      if (aborted) return;
+      if (attempt < 1) {
+        attempt++;
+        return setTimeout(() => {
+          if (!aborted) follow(rootUrl, 0);
+        }, 150);
+      }
+      onReady(err);
+    });
+  };
+
+  follow(rootUrl, 0);
+  return destroyAll;
+}
+
 function handleStreamProxy(req, res) {
-  const targetUrl = (req.query.url || '').toString();
+  const targetUrl = (req.query.url || '').toString().trim();
+  const deviceId = (req.query.deviceId || '').toString().trim();
+  const playId = (req.query.playId || '').toString().trim();
+
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
   }
 
   const isApiCall = targetUrl.includes('player_api.php') || targetUrl.includes('panel_api.php') || targetUrl.includes('xmltv.php');
+
+  // CACHÉ EN RAM + COMPRESIÓN GZIP PARA CATÁLOGO XTREAM (15.6 MB -> 1.4 MB, <20ms)
+  if (isApiCall && req.method === 'GET') {
+    const cached = apiResponseCache.get(targetUrl);
+    if (cached && (Date.now() - cached.cachedAt) < API_CACHE_TTL_MS) {
+      return sendCachedApiResponse(req, res, cached);
+    }
+
+    let flight = apiInFlight.get(targetUrl);
+    if (!flight) {
+      flight = fetchUpstreamBuffer(targetUrl)
+        .then((entry) => {
+          if (entry.rawBuf && entry.rawBuf.length > 2) {
+            // Limitar tamaño máximo del Map a 120 entradas
+            if (apiResponseCache.size > 120) {
+              const oldestKey = apiResponseCache.keys().next().value;
+              if (oldestKey) apiResponseCache.delete(oldestKey);
+            }
+            apiResponseCache.set(targetUrl, entry);
+          }
+          return entry;
+        })
+        .finally(() => {
+          apiInFlight.delete(targetUrl);
+        });
+      apiInFlight.set(targetUrl, flight);
+    }
+
+    return flight
+      .then((entry) => sendCachedApiResponse(req, res, entry))
+      .catch((err) => {
+        if (!res.headersSent) {
+          res.status(502).json({ error: 'Error al consultar catálogo upstream', details: err.message });
+        }
+      });
+  }
 
   let activeProxyReq = null;
   let activeProxyRes = null;
@@ -942,8 +1163,13 @@ function handleStreamProxy(req, res) {
     }
   };
 
+  const unregisterSession = (!isApiCall && deviceId)
+    ? registerDeviceStream(deviceId, playId, cleanupProxy)
+    : () => {};
+
   res.on('close', () => {
     cleanupProxy();
+    unregisterSession();
   });
 
   const proxyStream = (currentUrl, redirectCount = 0) => {
@@ -970,7 +1196,7 @@ function handleStreamProxy(req, res) {
     const proxyReq = client.request(currentUrl, {
       method: req.method,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
         'Accept': '*/*',
         'Connection': 'close',
         ...(req.headers.range ? { 'Range': req.headers.range } : {})
@@ -983,7 +1209,7 @@ function handleStreamProxy(req, res) {
 
       if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
         proxyRes.resume();
-        const nextUrl = url.resolve(currentUrl, proxyRes.headers.location);
+        const nextUrl = new URL(proxyRes.headers.location, currentUrl).toString();
         return proxyStream(nextUrl, redirectCount + 1);
       }
 
@@ -1051,7 +1277,7 @@ app.head('/proxy', handleStreamProxy);
 app.get('/api/proxy', handleStreamProxy);
 app.head('/api/proxy', handleStreamProxy);
 
-// 9B. DETECTOR DE PISTAS DE AUDIO (DUAL AUDIO / MULTI-IDIOMA) CON FFMPEG
+// 9B. DETECTOR DE PISTAS DE AUDIO (DUAL AUDIO / MULTI-IDIOMA) CON CACHÉ COMPARTIDA DESDE EL STREAM
 const LANG_LABELS = {
   spa: 'Español / Latino',
   es: 'Español / Latino',
@@ -1068,10 +1294,82 @@ const LANG_LABELS = {
   und: 'Audio'
 };
 
+function parseFfmpegStderrTracks(stderrData) {
+  const tracks = [];
+  let videoCodec = '';
+  let videoWidth = 0;
+  let videoHeight = 0;
+  let is10Bit = false;
+  let hasIncompatibleSubs = false;
+
+  if (/hdmv_pgs_subtitle|dvd_subtitle|Could not find codec parameters for stream/i.test(stderrData)) {
+    hasIncompatibleSubs = true;
+  }
+
+  const lines = stderrData.split(/\r?\n/);
+  let audioIdx = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (!videoCodec && /Stream #0:\d+.*:\s*Video:\s*([a-zA-Z0-9_]+)/i.test(line) && !/attached_pic|\bpng\b|\bmjpeg\b/i.test(line)) {
+      const vm = line.match(/Video:\s*([a-zA-Z0-9_]+)/i);
+      if (vm) videoCodec = vm[1].toLowerCase();
+      const resM = line.match(/\b(\d{3,4})x(\d{3,4})\b/);
+      if (resM) {
+        videoWidth = parseInt(resM[1], 10) || 0;
+        videoHeight = parseInt(resM[2], 10) || 0;
+      }
+      if (/yuv420p10|Main 10|bt2020/i.test(line)) {
+        is10Bit = true;
+      }
+    }
+
+    const m = line.match(/Stream #0:\d+(?:\(([a-zA-Z0-9_-]+)\))?[^:]*:\s*Audio:\s*([a-zA-Z0-9_]+)/i);
+    if (m) {
+      const langCode = (m[1] || 'und').toLowerCase();
+      const codec = (m[2] || 'aac').toLowerCase();
+      let titleMeta = '';
+      for (let j = i + 1; j <= Math.min(i + 4, lines.length - 1); j++) {
+        if (/Stream #\d+:\d+/.test(lines[j])) break;
+        const tm = lines[j].match(/title\s*:\s*(.+)$/i);
+        if (tm) {
+          titleMeta = tm[1].trim();
+          break;
+        }
+      }
+      const baseLang = LANG_LABELS[langCode] || (langCode !== 'und' ? langCode.toUpperCase() : `Pista ${audioIdx + 1}`);
+      const label = titleMeta ? `${baseLang} (${titleMeta})` : `${baseLang} — Pista ${audioIdx + 1}`;
+      tracks.push({
+        index: audioIdx,
+        lang: langCode,
+        codec,
+        label
+      });
+      audioIdx++;
+    }
+  }
+
+  return {
+    ok: Boolean(videoCodec || tracks.length > 0),
+    videoCodec,
+    videoWidth,
+    videoHeight,
+    is10Bit,
+    hasIncompatibleSubs,
+    audioTracks: tracks
+  };
+}
+
 app.get('/api/media/tracks', (req, res) => {
   const targetUrl = (req.query.url || '').toString().trim();
   if (!targetUrl || !ffmpegPath) {
     return res.status(200).json({ ok: false, audioTracks: [] });
+  }
+
+  // 1. Si /api/media/stream ya detectó las pistas al abrir el stream, devolverlas de inmediato sin abrir conexión extra
+  const cached = mediaTracksCache.get(targetUrl);
+  if (cached && cached.ok) {
+    return res.status(200).json(cached);
   }
 
   let parsedTarget;
@@ -1084,112 +1382,88 @@ app.get('/api/media/tracks', (req, res) => {
     return res.status(403).json({ ok: false, audioTracks: [] });
   }
 
-  let stderrData = '';
-  let finished = false;
-
-  const proc = spawn(ffmpegPath, [
-    '-hide_banner',
-    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
-    '-probesize', '65536',
-    '-analyzeduration', '0',
-    '-fpsprobesize', '0',
-    '-i', targetUrl
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-
-  const finishProbe = () => {
-    if (finished) return;
-    finished = true;
-    try { proc.kill('SIGKILL'); } catch (_) {}
-
-    const tracks = [];
-    let videoCodec = '';
-    let videoWidth = 0;
-    let videoHeight = 0;
-    let is10Bit = false;
-    let hasIncompatibleSubs = false;
-
-    if (/hdmv_pgs_subtitle|dvd_subtitle|Could not find codec parameters for stream/i.test(stderrData)) {
-      hasIncompatibleSubs = true;
+  // Esperar 1100ms por si /api/media/stream acaba de iniciar y está poblando mediaTracksCache
+  setTimeout(() => {
+    const cachedAfterWait = mediaTracksCache.get(targetUrl);
+    if (cachedAfterWait && cachedAfterWait.ok) {
+      return res.status(200).json(cachedAfterWait);
     }
 
-    const lines = stderrData.split(/\r?\n/);
-    let audioIdx = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+    let stderrData = '';
+    let finished = false;
+    let proc = null;
 
-      if (!videoCodec && /Stream #\d+:\d+.*:\s*Video:\s*([a-zA-Z0-9_]+)/i.test(line) && !/attached_pic|\bpng\b|\bmjpeg\b/i.test(line)) {
-        const vm = line.match(/Video:\s*([a-zA-Z0-9_]+)/i);
-        if (vm) videoCodec = vm[1].toLowerCase();
-        const resM = line.match(/\b(\d{3,4})x(\d{3,4})\b/);
-        if (resM) {
-          videoWidth = parseInt(resM[1], 10) || 0;
-          videoHeight = parseInt(resM[2], 10) || 0;
+    const destroyUpstream = openUpstreamStream(targetUrl, {}, (err, _uReq, uRes, killUpstream) => {
+      if (err || !uRes || uRes.statusCode !== 200) {
+        if (!finished) {
+          finished = true;
+          return res.status(200).json({ ok: false, audioTracks: [] });
         }
-        if (/yuv420p10|Main 10|bt2020/i.test(line)) {
-          is10Bit = true;
-        }
+        return;
       }
 
-      const m = line.match(/Stream #\d+:\d+(?:\(([a-zA-Z0-9_-]+)\))?[^:]*:\s*Audio:\s*([a-zA-Z0-9_]+)/i);
-      if (m) {
-        const langCode = (m[1] || 'und').toLowerCase();
-        const codec = (m[2] || 'aac').toLowerCase();
-        let titleMeta = '';
-        for (let j = i + 1; j <= Math.min(i + 4, lines.length - 1); j++) {
-          if (/Stream #\d+:\d+/.test(lines[j])) break;
-          const tm = lines[j].match(/title\s*:\s*(.+)$/i);
-          if (tm) {
-            titleMeta = tm[1].trim();
-            break;
-          }
-        }
-        const baseLang = LANG_LABELS[langCode] || (langCode !== 'und' ? langCode.toUpperCase() : `Pista ${audioIdx + 1}`);
-        const label = titleMeta ? `${baseLang} (${titleMeta})` : `${baseLang} — Pista ${audioIdx + 1}`;
-        tracks.push({
-          index: audioIdx,
-          lang: langCode,
-          codec,
-          label
-        });
-        audioIdx++;
-      }
-    }
+      proc = spawn(ffmpegPath, [
+        '-hide_banner',
+        '-probesize', '65536',
+        '-analyzeduration', '0',
+        '-fpsprobesize', '0',
+        '-i', 'pipe:0'
+      ], { stdio: ['pipe', 'ignore', 'pipe'] });
 
-    return res.status(200).json({
-      ok: true,
-      videoCodec,
-      videoWidth,
-      videoHeight,
-      is10Bit,
-      hasIncompatibleSubs,
-      audioTracks: tracks
+      proc.stdin.on('error', () => {});
+      uRes.pipe(proc.stdin);
+
+      const finishProbe = () => {
+        if (finished) return;
+        finished = true;
+        try { uRes.unpipe(proc.stdin); } catch (_) {}
+        try { killUpstream(); } catch (_) {}
+        try { proc.kill('SIGKILL'); } catch (_) {}
+
+        const parsedInfo = parseFfmpegStderrTracks(stderrData);
+        if (parsedInfo.ok) {
+          mediaTracksCache.set(targetUrl, parsedInfo);
+        }
+        return res.status(200).json(parsedInfo);
+      };
+
+      const timer = setTimeout(finishProbe, 4500);
+
+      proc.stderr.on('data', (chunk) => {
+        stderrData += chunk.toString();
+        if (stderrData.includes('At least one output file must be specified')) {
+          clearTimeout(timer);
+          finishProbe();
+        }
+      });
+
+      proc.on('error', () => {
+        clearTimeout(timer);
+        finishProbe();
+      });
+
+      proc.on('close', () => {
+        clearTimeout(timer);
+        finishProbe();
+      });
     });
-  };
 
-  const timer = setTimeout(finishProbe, 5500);
-
-  proc.stderr.on('data', (chunk) => {
-    stderrData += chunk.toString();
-    if (stderrData.includes('At least one output file must be specified')) {
-      clearTimeout(timer);
-      finishProbe();
-    }
-  });
-
-  proc.on('error', () => {
-    clearTimeout(timer);
-    finishProbe();
-  });
-
-  proc.on('close', () => {
-    clearTimeout(timer);
-    finishProbe();
-  });
+    res.on('close', () => {
+      if (!finished) {
+        try { destroyUpstream(); } catch (_) {}
+        if (proc) {
+          try { proc.kill('SIGKILL'); } catch (_) {}
+        }
+      }
+    });
+  }, 1100);
 });
 
-// 9C. TRANSCODIFICADOR EN VIVO MPEG-TS (CONVIERTE CANALES MPEG2VIDEO/MP2/AC3 A H.264 + AAC PARA MPEGTS.JS)
+// 9C. TRANSCODIFICADOR EN VIVO MPEG-TS (PIPE DIRECTO NODE -> FFMPEG STDIN -> H.264 + AAC ULTRA-BAJA LATENCIA)
 app.get('/api/media/live-ts', (req, res) => {
   const targetUrl = (req.query.url || '').toString().trim();
+  const deviceId = (req.query.deviceId || '').toString().trim();
+  const playId = (req.query.playId || '').toString().trim();
 
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
@@ -1208,139 +1482,273 @@ app.get('/api/media/live-ts', (req, res) => {
     return res.status(403).type('text/plain').send('Destino no permitido');
   }
 
-  const args = [
-    '-hide_banner',
-    '-loglevel', 'error',
-    '-threads', '2',
-    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
-    '-reconnect', '1',
-    '-reconnect_streamed', '1',
-    '-reconnect_delay_max', '5',
-    '-probesize', '131072',
-    '-analyzeduration', '200000',
-    '-fflags', '+genpts+discardcorrupt',
-    '-i', targetUrl,
-    '-map', '0:V:0?',
-    '-map', '0:a:0?',
-    '-c:v', 'libx264',
-    '-threads', '2',
-    '-preset', 'ultrafast',
-    '-tune', 'zerolatency',
-    '-vf', 'scale=1280:-2,format=yuv420p',
-    '-g', '30',
-    '-b:v', '2200k',
-    '-maxrate', '2500k',
-    '-bufsize', '5000k',
-    '-c:a', 'aac',
-    '-ac', '2',
-    '-ar', '48000',
-    '-b:a', '128k',
-    '-f', 'mpegts',
-    'pipe:1'
-  ];
+  let proc = null;
+  let closed = false;
+  let destroyUpstream = () => {};
 
-  res.writeHead(200, {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': '*',
-    'Content-Type': 'video/mp2t',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Connection': 'close',
-    'X-Accel-Buffering': 'no'
-  });
-
-  if (res.socket) res.socket.setNoDelay(true);
-
-  const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'ignore'] });
-  proc.stdout.pipe(res);
-
-  const killProc = () => {
-    try { proc.kill('SIGKILL'); } catch (_) {}
+  const cleanupAll = () => {
+    if (closed) return;
+    closed = true;
+    try { destroyUpstream(); } catch (_) {}
+    if (proc) {
+      try { proc.kill('SIGKILL'); } catch (_) {}
+      proc = null;
+    }
   };
 
-  res.on('close', killProc);
-  proc.on('error', killProc);
-});
+  const unregisterSession = deviceId
+    ? registerDeviceStream(deviceId, playId, cleanupAll)
+    : () => {};
 
-// 9D. STREAMING UNIVERSAL REMUX MPEG-TS CON FFMPEG (CAMBIO DE PISTA DE AUDIO DUAL / AC3 / SUBTÍTULOS PGS PARA MPEGTS.JS)
-app.get('/api/media/stream', (req, res) => {
-  const targetUrl = (req.query.url || '').toString().trim();
-  const audioTrack = Math.max(0, parseInt(req.query.audioTrack || '0', 10) || 0);
-  const startSec = Math.max(0, parseFloat(req.query.start || '0') || 0);
-  const transcodeVideo = req.query.transcodeVideo === '1';
+  res.on('close', () => {
+    cleanupAll();
+    unregisterSession();
+  });
 
-  if (!targetUrl) {
-    return res.status(400).type('text/plain').send('Falta parámetro url');
-  }
-  if (!ffmpegPath) {
-    return handleStreamProxy(req, res);
-  }
+  destroyUpstream = openUpstreamStream(targetUrl, {}, (err, _uReq, uRes) => {
+    if (closed) return;
+    if (err || !uRes || uRes.statusCode >= 400) {
+      cleanupAll();
+      unregisterSession();
+      if (!res.headersSent) {
+        res.status(502).type('text/plain').send('Señal de origen no disponible');
+      }
+      return;
+    }
 
-  let parsedTarget;
-  try {
-    parsedTarget = new URL(targetUrl);
-  } catch (_) {
-    return res.status(400).type('text/plain').send('URL inválida');
-  }
-  if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
-    return res.status(403).type('text/plain').send('Destino no permitido');
-  }
-
-  const args = [
-    '-hide_banner',
-    '-loglevel', 'error',
-    '-threads', '2',
-    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
-    '-reconnect', '1',
-    '-reconnect_streamed', '1',
-    '-reconnect_delay_max', '5',
-    '-probesize', '65536',
-    '-analyzeduration', '0',
-    '-fpsprobesize', '0',
-    '-fflags', '+genpts+discardcorrupt'
-  ];
-
-  if (startSec > 0) {
-    args.push('-ss', String(startSec));
-  }
-
-  args.push(
-    '-i', targetUrl,
-    '-map', '0:V:0?',
-    '-map', `0:a:${audioTrack}?`,
-    '-sn'
-  );
-
-  if (transcodeVideo) {
-    args.push(
+    const args = [
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-threads', '2',
+      '-probesize', '500000',
+      '-analyzeduration', '500000',
+      '-i', 'pipe:0',
+      '-map', '0:v:0?',
+      '-map', '0:a:0?',
+      '-sn',
       '-c:v', 'libx264',
       '-threads', '2',
       '-preset', 'ultrafast',
-      '-vf', 'scale=1280:-2,format=yuv420p',
-      '-g', '48',
-      '-b:v', '2200k',
-      '-maxrate', '2500k',
-      '-bufsize', '5000k'
-    );
-  } else {
-    args.push(
-      '-c:v', 'copy',
-      '-bsf:v', 'h264_mp4toannexb'
-    );
+      '-tune', 'zerolatency',
+      '-vf', 'scale=960:-2,format=yuv420p',
+      '-g', '30',
+      '-b:v', '1600k',
+      '-maxrate', '1900k',
+      '-bufsize', '3800k',
+      '-c:a', 'aac',
+      '-ac', '2',
+      '-ar', '44100',
+      '-b:a', '128k',
+      '-muxdelay', '0',
+      '-muxpreload', '0',
+      '-flush_packets', '1',
+      '-f', 'mpegts',
+      'pipe:1'
+    ];
+
+    res.writeHead(200, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': '*',
+      'Content-Type': 'video/mp2t',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Connection': 'close',
+      'X-Accel-Buffering': 'no'
+    });
+
+    if (res.socket) res.socket.setNoDelay(true);
+
+    proc = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'ignore'] });
+    proc.stdin.on('error', () => {});
+    uRes.pipe(proc.stdin);
+    proc.stdout.pipe(res);
+
+    proc.on('error', cleanupAll);
+    proc.on('close', cleanupAll);
+  });
+});
+
+// 9D. STREAMING UNIVERSAL CINE Y SERIES EN FRAGMENTED MP4 NATIVO (REMUX 0% CPU + DUAL AUDIO + SIN SUBTÍTULOS PGS)
+app.get('/api/media/stream', (req, res) => {
+  const targetUrl = (req.query.url || '').toString().trim();
+  const deviceId = (req.query.deviceId || '').toString().trim();
+  const playId = (req.query.playId || '').toString().trim();
+  const audioTrack = Math.max(0, parseInt(req.query.audioTrack || '0', 10) || 0);
+  const startSec = Math.max(0, parseFloat(req.query.start || '0') || 0);
+  const transcodeVideo = req.query.transcodeVideo === '1';
+  const format = (req.query.format || 'mp4').toString().toLowerCase();
+
+  if (!targetUrl) {
+    return res.status(400).type('text/plain').send('Falta parámetro url');
+  }
+  if (!ffmpegPath) {
+    return handleStreamProxy(req, res);
   }
 
-  args.push(
-    '-c:a', 'aac',
-    '-ac', '2',
-    '-ar', '48000',
-    '-b:a', '160k',
-    '-f', 'mpegts',
-    'pipe:1'
-  );
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(targetUrl);
+  } catch (_) {
+    return res.status(400).type('text/plain').send('URL inválida');
+  }
+  if (!['http:', 'https:'].includes(parsedTarget.protocol) || isPrivateOrBlockedHost(parsedTarget.hostname)) {
+    return res.status(403).type('text/plain').send('Destino no permitido');
+  }
+
+  let proc = null;
+  let closed = false;
+  let destroyUpstream = () => {};
+
+  const cleanupAll = () => {
+    if (closed) return;
+    closed = true;
+    try { destroyUpstream(); } catch (_) {}
+    if (proc) {
+      try { proc.kill('SIGKILL'); } catch (_) {}
+      proc = null;
+    }
+  };
+
+  const unregisterSession = deviceId
+    ? registerDeviceStream(deviceId, playId, cleanupAll)
+    : () => {};
+
+  res.on('close', () => {
+    cleanupAll();
+    unregisterSession();
+  });
+
+  const buildOutputArgs = () => {
+    const out = [
+      '-map', '0:V:0?',
+      '-map', `0:a:${audioTrack}?`,
+      '-sn'
+    ];
+
+    if (transcodeVideo) {
+      out.push(
+        '-c:v', 'libx264',
+        '-threads', '2',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-vf', 'scale=1280:-2,format=yuv420p',
+        '-g', '30',
+        '-b:v', '2000k',
+        '-maxrate', '2300k',
+        '-bufsize', '4600k'
+      );
+    } else {
+      out.push('-c:v', 'copy');
+      if (format === 'mpegts') {
+        out.push('-bsf:v', 'h264_mp4toannexb');
+      }
+    }
+
+    out.push(
+      '-c:a', 'aac',
+      '-ac', '2',
+      '-ar', '48000',
+      '-b:a', '160k'
+    );
+
+    if (format === 'mpegts') {
+      out.push(
+        '-muxdelay', '0',
+        '-muxpreload', '0',
+        '-flush_packets', '1',
+        '-f', 'mpegts',
+        'pipe:1'
+      );
+    } else {
+      out.push(
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+        '-flush_packets', '1',
+        '-f', 'mp4',
+        'pipe:1'
+      );
+    }
+    return out;
+  };
+
+  const attachStderrTrackCapture = (childProc) => {
+    let stderrBuf = '';
+    let parsedOnce = false;
+    childProc.stderr.on('data', (chunk) => {
+      if (parsedOnce) return;
+      stderrBuf += chunk.toString();
+      if (stderrBuf.includes('Output #0') || stderrBuf.includes('Stream mapping:') || stderrBuf.length > 16384) {
+        parsedOnce = true;
+        const parsedInfo = parseFfmpegStderrTracks(stderrBuf);
+        if (parsedInfo.ok) {
+          mediaTracksCache.set(targetUrl, parsedInfo);
+        }
+      }
+    });
+  };
+
+  const contentType = format === 'mpegts' ? 'video/mp2t' : 'video/mp4';
+
+  // Si startSec === 0, conectamos con Node http.get -> pipe:0 para evitar que FFmpeg busque Cues al final de archivos MKV de 3 GB
+  if (startSec <= 0) {
+    destroyUpstream = openUpstreamStream(targetUrl, {}, (err, _uReq, uRes) => {
+      if (closed) return;
+      if (err || !uRes || uRes.statusCode >= 400) {
+        cleanupAll();
+        unregisterSession();
+        if (!res.headersSent) {
+          res.status(502).type('text/plain').send('Archivo de origen no disponible');
+        }
+        return;
+      }
+
+      const args = [
+        '-hide_banner',
+        '-threads', '2',
+        '-probesize', transcodeVideo ? '250000' : '65536',
+        '-analyzeduration', transcodeVideo ? '200000' : '0',
+        ...(transcodeVideo ? [] : ['-fpsprobesize', '0']),
+        '-i', 'pipe:0',
+        ...buildOutputArgs()
+      ];
+
+      res.writeHead(200, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
+        'Content-Type': contentType,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Connection': 'close',
+        'X-Accel-Buffering': 'no'
+      });
+
+      if (res.socket) res.socket.setNoDelay(true);
+
+      proc = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      proc.stdin.on('error', () => {});
+      attachStderrTrackCapture(proc);
+      uRes.pipe(proc.stdin);
+      proc.stdout.pipe(res);
+
+      proc.on('error', cleanupAll);
+      proc.on('close', cleanupAll);
+    });
+    return;
+  }
+
+  // Si startSec > 0 (adelantar/retroceder o cambiar audio a mitad de película), usar -ss con HTTP Range
+  const seekArgs = [
+    '-hide_banner',
+    '-threads', '2',
+    '-user_agent', 'VLC/3.0.20 LibVLC/3.0.20',
+    '-probesize', '250000',
+    '-analyzeduration', '200000',
+    '-ss', String(startSec),
+    '-i', targetUrl,
+    ...buildOutputArgs()
+  ];
 
   res.writeHead(200, {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': '*',
-    'Content-Type': 'video/mp2t',
+    'Content-Type': contentType,
     'Cache-Control': 'no-cache, no-store, must-revalidate',
     'Connection': 'close',
     'X-Accel-Buffering': 'no'
@@ -1348,16 +1756,12 @@ app.get('/api/media/stream', (req, res) => {
 
   if (res.socket) res.socket.setNoDelay(true);
 
-  const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'ignore'] });
-
+  proc = spawn(ffmpegPath, seekArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+  attachStderrTrackCapture(proc);
   proc.stdout.pipe(res);
 
-  const killProc = () => {
-    try { proc.kill('SIGKILL'); } catch (_) {}
-  };
-
-  res.on('close', killProc);
-  proc.on('error', killProc);
+  proc.on('error', cleanupAll);
+  proc.on('close', cleanupAll);
 });
 
 // Bloquear panel legado inseguro en public/

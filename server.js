@@ -11,7 +11,7 @@ const { spawn } = require('child_process');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 
-const SERVER_APP_VERSION = '4.7';
+const SERVER_APP_VERSION = '4.8';
 
 let ffmpegPath = null;
 try {
@@ -893,7 +893,7 @@ app.all('/api/webhooks/mercadopago', handleMercadoPagoWebhook);
 app.all('/api/webhook/mercadopago', handleMercadoPagoWebhook);
 
 // 9. GESTOR DE PROCESOS, CACHÉ GZIP DE CATÁLOGO Y PROXY ULTRA RÁPIDO PARA STREAMING
-const API_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos en RAM
+const API_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas en RAM + precalentamiento automático
 const apiResponseCache = new Map();
 const apiInFlight = new Map();
 const mediaTracksCache = new Map();
@@ -994,8 +994,45 @@ function fetchUpstreamBuffer(startUrl, redirectCount = 0) {
       const chunks = [];
       uRes.on('data', (c) => chunks.push(c));
       uRes.on('end', () => {
-        const rawBuf = Buffer.concat(chunks);
+        let rawBuf = Buffer.concat(chunks);
         const contentType = uRes.headers['content-type'] || 'application/json; charset=utf-8';
+
+        // Optimización de arquitectura: reducir peso de catálogos JSON en 75% eliminando campos pesados no usados (plot, cast, backdrop_path)
+        try {
+          if (startUrl.includes('action=get_series') && !startUrl.includes('get_series_categories') && !startUrl.includes('get_series_info')) {
+            const arr = JSON.parse(rawBuf.toString('utf8'));
+            if (Array.isArray(arr)) {
+              rawBuf = Buffer.from(JSON.stringify(arr.map((it) => ({
+                series_id: it.series_id,
+                name: it.name,
+                cover: it.cover,
+                category_id: it.category_id
+              }))), 'utf8');
+            }
+          } else if (startUrl.includes('action=get_vod_streams')) {
+            const arr = JSON.parse(rawBuf.toString('utf8'));
+            if (Array.isArray(arr)) {
+              rawBuf = Buffer.from(JSON.stringify(arr.map((it) => ({
+                stream_id: it.stream_id,
+                name: it.name,
+                stream_icon: it.stream_icon,
+                category_id: it.category_id,
+                container_extension: it.container_extension
+              }))), 'utf8');
+            }
+          } else if (startUrl.includes('action=get_live_streams')) {
+            const arr = JSON.parse(rawBuf.toString('utf8'));
+            if (Array.isArray(arr)) {
+              rawBuf = Buffer.from(JSON.stringify(arr.map((it) => ({
+                stream_id: it.stream_id,
+                name: it.name,
+                stream_icon: it.stream_icon,
+                category_id: it.category_id
+              }))), 'utf8');
+            }
+          }
+        } catch (_) {}
+
         zlib.gzip(rawBuf, (err, gzipBuf) => {
           resolve({
             rawBuf,
@@ -1404,9 +1441,8 @@ app.get('/api/media/tracks', (req, res) => {
 
       proc = spawn(ffmpegPath, [
         '-hide_banner',
-        '-probesize', '65536',
-        '-analyzeduration', '0',
-        '-fpsprobesize', '0',
+        '-probesize', '2000000',
+        '-analyzeduration', '500000',
         '-i', 'pipe:0'
       ], { stdio: ['pipe', 'ignore', 'pipe'] });
 
@@ -1660,6 +1696,7 @@ app.get('/api/media/stream', (req, res) => {
       );
     } else {
       out.push(
+        '-frag_duration', '500000',
         '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
         '-flush_packets', '1',
         '-f', 'mp4',
@@ -1703,9 +1740,8 @@ app.get('/api/media/stream', (req, res) => {
       const args = [
         '-hide_banner',
         '-threads', '2',
-        '-probesize', transcodeVideo ? '250000' : '65536',
-        '-analyzeduration', transcodeVideo ? '200000' : '0',
-        ...(transcodeVideo ? [] : ['-fpsprobesize', '0']),
+        '-probesize', '2000000',
+        '-analyzeduration', '500000',
         '-i', 'pipe:0',
         ...buildOutputArgs()
       ];
@@ -1786,6 +1822,48 @@ app.use((_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
+async function prewarmActiveDeviceCatalogs() {
+  try {
+    const db = loadDb();
+    const devices = Object.values(db.devices || {});
+    const seenBases = new Set();
+    for (const dev of devices) {
+      const pl = dev && dev.playlist;
+      if (!pl) continue;
+      let host = pl.host || '';
+      let user = pl.username || '';
+      let pass = pl.password || '';
+      if (pl.m3uUrl) {
+        try {
+          const u = new URL(pl.m3uUrl);
+          host = u.origin;
+          user = u.searchParams.get('username') || user;
+          pass = u.searchParams.get('password') || pass;
+        } catch (_) {}
+      }
+      if (!host || !user || !pass) continue;
+      const baseApi = `${host.replace(/\/+$/, '')}/player_api.php?username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
+      if (seenBases.has(baseApi)) continue;
+      seenBases.add(baseApi);
+
+      const actions = ['get_live_categories', 'get_vod_categories', 'get_series_categories', 'get_live_streams', 'get_series', 'get_vod_streams'];
+      for (const act of actions) {
+        const targetUrl = `${baseApi}&action=${act}`;
+        const cached = apiResponseCache.get(targetUrl);
+        if (cached && (Date.now() - cached.cachedAt) < (API_CACHE_TTL_MS - 15 * 60 * 1000)) continue;
+        try {
+          const entry = await fetchUpstreamBuffer(targetUrl);
+          if (entry && entry.rawBuf && entry.rawBuf.length > 2) {
+            apiResponseCache.set(targetUrl, entry);
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+}
+
 app.listen(PORT, () => {
-  console.log(`[FULL PREMIUM TVGO] Servidor activo en puerto ${PORT}`);
+  console.log(`[FULL PREMIUM TVGO] Servidor v${SERVER_APP_VERSION} activo en puerto ${PORT}`);
+  setTimeout(prewarmActiveDeviceCatalogs, 1500);
+  setInterval(prewarmActiveDeviceCatalogs, 25 * 60 * 1000);
 });

@@ -1,5 +1,5 @@
-// Service Worker v4.7 — Auto-limpieza de caché y recarga automática en Smart TV WebView
-const SW_VERSION = 'v4.7';
+// Service Worker v4.8 — Auto-limpieza de caché y recarga automática en Smart TV WebView
+const SW_VERSION = 'v4.8';
 
 self.addEventListener('install', () => {
   self.skipWaiting();

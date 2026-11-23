@@ -363,7 +363,7 @@
         }
       };
 
-      const APP_VERSION = '4.8';
+      const APP_VERSION = '4.9';
       const connectingRef = useRef(false);
 
       const fetchJsonViaProxy = async (actionUrl, retries = 2) => {
@@ -904,7 +904,7 @@
                     Full Premium <span className="text-cyan-300">TvGo</span>
                   </span>
                   <span className="px-1.5 py-0.2 rounded bg-cyan-500/20 border border-cyan-400/40 text-[9px] font-mono font-black text-cyan-300">
-                    v4.8
+                    v4.9
                   </span>
                   {auth && (
                     <span className="text-slate-400 text-xs font-semibold hidden sm:inline">
@@ -1577,7 +1577,7 @@
       );
     }
 
-    // REPRODUCTOR UNIVERSAL SMART TV v4.8 (LIVE TS DIRECTO CONFIG PROBADA + FFMPEG FALLBACK + VOD FRAGMENTED MP4 NATIVO 2MB PROBE)
+    // REPRODUCTOR UNIVERSAL SMART TV v4.9 (MPEG-TS AUTO-ADAPTATIVO EN SERVIDOR + MSE MPEGTS.JS PARA VIVO, CINE Y SERIES)
     const BLACK_POSTER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=';
     const liveTranscodeIds = new Set();
 
@@ -1606,6 +1606,8 @@
         return item.streamUrl;
       }, [item, useFhdCompat]);
 
+      const nudgeTimerRef = useRef(null);
+
       const cleanup = () => {
         const oldPlayId = playIdRef.current;
         if (oldPlayId && deviceId) {
@@ -1614,6 +1616,10 @@
         if (fallbackTimerRef.current) {
           clearTimeout(fallbackTimerRef.current);
           fallbackTimerRef.current = null;
+        }
+        if (nudgeTimerRef.current) {
+          clearInterval(nudgeTimerRef.current);
+          nudgeTimerRef.current = null;
         }
         if (hlsRef.current) {
           try {
@@ -1662,7 +1668,7 @@
         if (!video || !window.mpegts || !window.mpegts.isSupported()) return false;
         try {
           const player = window.mpegts.createPlayer({
-            type: 'm2ts',
+            type: 'mse',
             isLive: true,
             url: streamUrl,
             cors: true
@@ -1680,6 +1686,21 @@
           player.attachMediaElement(video);
           player.load();
           attemptPlay(player, video);
+
+          if (nudgeTimerRef.current) {
+            clearInterval(nudgeTimerRef.current);
+          }
+          nudgeTimerRef.current = setInterval(() => {
+            try {
+              if (!video || video.readyState >= 3 || video.buffered.length === 0) return;
+              const s = video.buffered.start(0);
+              const e = video.buffered.end(0);
+              if ((e - s) > 0.8 && video.currentTime <= s + 0.04) {
+                video.currentTime = s + 0.25;
+                attemptPlay(player, video);
+              }
+            } catch (_) {}
+          }, 1200);
 
           player.on(window.mpegts.Events.ERROR, (errType) => {
             if (video.currentTime > 0 && video.readyState >= 2) return;
@@ -1808,9 +1829,7 @@
             } catch (_) {}
           }
 
-          const liveStreamUrl = liveModeType === 'FFMPEG_TS'
-            ? `${window.location.origin}/api/media/live-ts?url=${encodeURIComponent(activeStreamUrl)}${sessionQuery}`
-            : directProxyUrl;
+          const liveStreamUrl = `${window.location.origin}/api/media/stream?format=mpegts&url=${encodeURIComponent(activeStreamUrl)}${liveModeType === 'FFMPEG_TS' ? '&transcodeVideo=1' : ''}${sessionQuery}`;
 
           const attached = attachMpegtsPlayer(
             liveStreamUrl,
@@ -1831,7 +1850,7 @@
                   if (item?.id) liveTranscodeIds.add(item.id);
                   setLiveModeType('FFMPEG_TS');
                 }
-              }, 8500);
+              }, 9500);
             }
           } else {
             video.src = liveStreamUrl;
@@ -1841,14 +1860,26 @@
           return;
         }
 
-        // 2. MODO CINE Y SERIES (VOD EN FRAGMENTED MP4 NATIVO O PROXY DIRECTO)
-        const shouldUseFmp4Stream = vodMode === 'REMUX' || vodMode === 'TRANSCODE' || selectedAudioTrack > 0;
-        if (shouldUseFmp4Stream) {
+        // 2. MODO CINE Y SERIES (MPEG-TS AUTO-ADAPTATIVO EN SERVIDOR CON MSE MPEGTS.JS + FALLBACK DIRECTO MP4)
+        const shouldUseStream = vodMode === 'REMUX' || vodMode === 'TRANSCODE' || selectedAudioTrack > 0;
+        if (shouldUseStream) {
           const needsVideoTranscode = vodMode === 'TRANSCODE';
-          const fmp4Url = `${window.location.origin}/api/media/stream?url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}${needsVideoTranscode ? '&transcodeVideo=1' : ''}${sessionQuery}`;
-          video.src = fmp4Url;
-          video.load();
-          attemptPlay(video, video);
+          const mpegtsVodUrl = `${window.location.origin}/api/media/stream?format=mpegts&url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}${needsVideoTranscode ? '&transcodeVideo=1' : ''}${sessionQuery}`;
+
+          const attachedVod = attachMpegtsPlayer(mpegtsVodUrl, (errType) => {
+            if (vodMode === 'REMUX') {
+              setVodMode('TRANSCODE');
+            } else if (errType === window.mpegts?.ErrorTypes?.NETWORK_ERROR) {
+              setStatus('ERROR');
+            }
+          });
+
+          if (!attachedVod) {
+            const fmp4Url = `${window.location.origin}/api/media/stream?format=mp4&url=${encodeURIComponent(activeStreamUrl)}&audioTrack=${selectedAudioTrack}${needsVideoTranscode ? '&transcodeVideo=1' : ''}${sessionQuery}`;
+            video.src = fmp4Url;
+            video.load();
+            attemptPlay(video, video);
+          }
 
           if (!needsVideoTranscode) {
             fallbackTimerRef.current = setTimeout(() => {

@@ -11,7 +11,7 @@ const { spawn } = require('child_process');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 
-const SERVER_APP_VERSION = '4.8';
+const SERVER_APP_VERSION = '4.9';
 
 let ffmpegPath = null;
 try {
@@ -1338,6 +1338,7 @@ function parseFfmpegStderrTracks(stderrData) {
   let videoHeight = 0;
   let is10Bit = false;
   let hasIncompatibleSubs = false;
+  let validAudioCount = 0;
 
   if (/hdmv_pgs_subtitle|dvd_subtitle|Could not find codec parameters for stream/i.test(stderrData)) {
     hasIncompatibleSubs = true;
@@ -1365,6 +1366,8 @@ function parseFfmpegStderrTracks(stderrData) {
     if (m) {
       const langCode = (m[1] || 'und').toLowerCase();
       const codec = (m[2] || 'aac').toLowerCase();
+      const isBrokenAudio = /\b0 channels\b|unspecified frame size/i.test(line);
+      if (!isBrokenAudio) validAudioCount++;
       let titleMeta = '';
       for (let j = i + 1; j <= Math.min(i + 4, lines.length - 1); j++) {
         if (/Stream #\d+:\d+/.test(lines[j])) break;
@@ -1380,10 +1383,15 @@ function parseFfmpegStderrTracks(stderrData) {
         index: audioIdx,
         lang: langCode,
         codec,
+        broken: isBrokenAudio,
         label
       });
       audioIdx++;
     }
+  }
+
+  if (/Could not find codec parameters for stream \d+ \(Audio:/i.test(stderrData) && validAudioCount <= 1) {
+    validAudioCount = 0;
   }
 
   return {
@@ -1393,6 +1401,7 @@ function parseFfmpegStderrTracks(stderrData) {
     videoHeight,
     is10Bit,
     hasIncompatibleSubs,
+    hasValidAudio: validAudioCount > 0,
     audioTracks: tracks
   };
 }
@@ -1603,15 +1612,15 @@ app.get('/api/media/live-ts', (req, res) => {
   });
 });
 
-// 9D. STREAMING UNIVERSAL CINE Y SERIES EN FRAGMENTED MP4 NATIVO (REMUX 0% CPU + DUAL AUDIO + SIN SUBTÍTULOS PGS)
+// 9D. STREAMING UNIVERSAL AUTO-ADAPTATIVO (TV EN VIVO + CINE + SERIES EN MPEG-TS/MP4 CON DETECCIÓN DE CÓDEC EN VIVO)
 app.get('/api/media/stream', (req, res) => {
   const targetUrl = (req.query.url || '').toString().trim();
   const deviceId = (req.query.deviceId || '').toString().trim();
   const playId = (req.query.playId || '').toString().trim();
   const audioTrack = Math.max(0, parseInt(req.query.audioTrack || '0', 10) || 0);
   const startSec = Math.max(0, parseFloat(req.query.start || '0') || 0);
-  const transcodeVideo = req.query.transcodeVideo === '1';
-  const format = (req.query.format || 'mp4').toString().toLowerCase();
+  const requestedTranscode = req.query.transcodeVideo === '1';
+  const format = (req.query.format || 'mpegts').toString().toLowerCase();
 
   if (!targetUrl) {
     return res.status(400).type('text/plain').send('Falta parámetro url');
@@ -1653,12 +1662,31 @@ app.get('/api/media/stream', (req, res) => {
     unregisterSession();
   });
 
-  const buildOutputArgs = () => {
-    const out = [
-      '-map', '0:V:0?',
-      '-map', `0:a:${audioTrack}?`,
-      '-sn'
-    ];
+  const isLiveTarget = targetUrl.includes('/live/') || /\.ts(\?|$)/i.test(targetUrl);
+  const probeSize = isLiveTarget ? '128000' : '2000000';
+  const analyzeDur = isLiveTarget ? '150000' : '500000';
+
+  const cachedMeta = mediaTracksCache.get(targetUrl);
+  const cachedNeedsTranscode = Boolean(
+    cachedMeta && cachedMeta.ok && (
+      (cachedMeta.videoCodec && cachedMeta.videoCodec !== 'h264') ||
+      cachedMeta.is10Bit ||
+      cachedMeta.videoWidth > 1920
+    )
+  );
+  const cachedNeedsNoAudio = Boolean(cachedMeta && cachedMeta.ok && cachedMeta.hasValidAudio === false);
+
+  const initialTranscodeVideo = requestedTranscode || cachedNeedsTranscode;
+  const initialDisableAudio = cachedNeedsNoAudio;
+
+  const buildOutputArgs = (transcodeVideo, disableAudio) => {
+    const out = ['-map', '0:V:0?'];
+    if (disableAudio) {
+      out.push('-an');
+    } else {
+      out.push('-map', `0:a:${audioTrack}?`);
+    }
+    out.push('-sn');
 
     if (transcodeVideo) {
       out.push(
@@ -1666,11 +1694,11 @@ app.get('/api/media/stream', (req, res) => {
         '-threads', '2',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
-        '-vf', 'scale=1280:-2,format=yuv420p',
+        '-vf', isLiveTarget ? 'scale=960:-2,format=yuv420p' : 'scale=1280:-2,format=yuv420p',
         '-g', '30',
-        '-b:v', '2000k',
-        '-maxrate', '2300k',
-        '-bufsize', '4600k'
+        '-b:v', isLiveTarget ? '1600k' : '2000k',
+        '-maxrate', isLiveTarget ? '1900k' : '2300k',
+        '-bufsize', isLiveTarget ? '3800k' : '4600k'
       );
     } else {
       out.push('-c:v', 'copy');
@@ -1679,12 +1707,14 @@ app.get('/api/media/stream', (req, res) => {
       }
     }
 
-    out.push(
-      '-c:a', 'aac',
-      '-ac', '2',
-      '-ar', '48000',
-      '-b:a', '160k'
-    );
+    if (!disableAudio) {
+      out.push(
+        '-c:a', 'aac',
+        '-ac', '2',
+        '-ar', '48000',
+        '-b:a', isLiveTarget ? '128k' : '160k'
+      );
+    }
 
     if (format === 'mpegts') {
       out.push(
@@ -1706,25 +1736,9 @@ app.get('/api/media/stream', (req, res) => {
     return out;
   };
 
-  const attachStderrTrackCapture = (childProc) => {
-    let stderrBuf = '';
-    let parsedOnce = false;
-    childProc.stderr.on('data', (chunk) => {
-      if (parsedOnce) return;
-      stderrBuf += chunk.toString();
-      if (stderrBuf.includes('Output #0') || stderrBuf.includes('Stream mapping:') || stderrBuf.length > 16384) {
-        parsedOnce = true;
-        const parsedInfo = parseFfmpegStderrTracks(stderrBuf);
-        if (parsedInfo.ok) {
-          mediaTracksCache.set(targetUrl, parsedInfo);
-        }
-      }
-    });
-  };
-
   const contentType = format === 'mpegts' ? 'video/mp2t' : 'video/mp4';
 
-  // Si startSec === 0, conectamos con Node http.get -> pipe:0 para evitar que FFmpeg busque Cues al final de archivos MKV de 3 GB
+  // Si startSec <= 0, conectamos con Node http.get -> pipe:0 para arranque instantáneo y handoff automático si el códec requiere libx264 o -an
   if (startSec <= 0) {
     destroyUpstream = openUpstreamStream(targetUrl, {}, (err, _uReq, uRes) => {
       if (closed) return;
@@ -1732,19 +1746,10 @@ app.get('/api/media/stream', (req, res) => {
         cleanupAll();
         unregisterSession();
         if (!res.headersSent) {
-          res.status(502).type('text/plain').send('Archivo de origen no disponible');
+          res.status(502).type('text/plain').send('Archivo o señal de origen no disponible');
         }
         return;
       }
-
-      const args = [
-        '-hide_banner',
-        '-threads', '2',
-        '-probesize', '2000000',
-        '-analyzeduration', '500000',
-        '-i', 'pipe:0',
-        ...buildOutputArgs()
-      ];
 
       res.writeHead(200, {
         'Access-Control-Allow-Origin': '*',
@@ -1754,17 +1759,136 @@ app.get('/api/media/stream', (req, res) => {
         'Connection': 'close',
         'X-Accel-Buffering': 'no'
       });
-
       if (res.socket) res.socket.setNoDelay(true);
 
-      proc = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-      proc.stdin.on('error', () => {});
-      attachStderrTrackCapture(proc);
-      uRes.pipe(proc.stdin);
-      proc.stdout.pipe(res);
+      const initialChunks = [];
+      let lockedIn = false;
+      let switched = false;
 
-      proc.on('error', cleanupAll);
-      proc.on('close', cleanupAll);
+      const lockStreamToProc = (targetProc) => {
+        if (lockedIn || closed) return;
+        lockedIn = true;
+        uRes.removeListener('data', onInitialData);
+        initialChunks.length = 0;
+        uRes.pipe(targetProc.stdin);
+      };
+
+      const startFfmpegProc = (transcodeVideo, disableAudio, isFallback = false) => {
+        if (closed) return null;
+        const args = [
+          '-hide_banner',
+          '-threads', '2',
+          '-probesize', probeSize,
+          '-analyzeduration', analyzeDur,
+          '-i', 'pipe:0',
+          ...buildOutputArgs(transcodeVideo, disableAudio)
+        ];
+
+        const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+        child.stdin.on('error', () => {});
+        proc = child;
+
+        let stderrBuf = '';
+        let checked = false;
+
+        const evaluateHandoff = (fromClose = false) => {
+          if (closed || isFallback || lockedIn || switched || checked) return;
+          if (!fromClose && !(
+            stderrBuf.includes('Stream mapping:') ||
+            stderrBuf.includes('Output #0') ||
+            stderrBuf.includes('not supported by the bitstream filter') ||
+            stderrBuf.includes('Error initializing filters') ||
+            stderrBuf.includes('Invalid data found')
+          )) {
+            return;
+          }
+          checked = true;
+
+          const parsedInfo = parseFfmpegStderrTracks(stderrBuf);
+          if (parsedInfo.ok) {
+            mediaTracksCache.set(targetUrl, parsedInfo);
+          }
+
+          const needV = !parsedInfo.videoCodec ||
+            parsedInfo.videoCodec !== 'h264' ||
+            parsedInfo.is10Bit ||
+            parsedInfo.videoWidth > 1920 ||
+            stderrBuf.includes('not supported by the bitstream filter');
+          const needNoA = !parsedInfo.hasValidAudio;
+
+          if ((needV && !transcodeVideo) || (needNoA && !disableAudio) || fromClose) {
+            switched = true;
+            uRes.removeListener('data', onInitialData);
+            try { child.kill('SIGKILL'); } catch (_) {}
+            const p2 = startFfmpegProc(needV || fromClose || transcodeVideo, needNoA || disableAudio, true);
+            if (p2) {
+              for (const c of initialChunks) {
+                if (p2.stdin.writable) p2.stdin.write(c);
+              }
+              lockStreamToProc(p2);
+            }
+          } else {
+            lockStreamToProc(child);
+          }
+        };
+
+        child.stdout.on('data', (chunk) => {
+          if (closed) return;
+          if (!lockedIn) lockStreamToProc(child);
+          res.write(chunk);
+        });
+
+        child.stderr.on('data', (chunk) => {
+          if (closed || isFallback || lockedIn || switched) return;
+          if (stderrBuf.length < 24576) {
+            stderrBuf += chunk.toString();
+          }
+          evaluateHandoff(false);
+        });
+
+        child.on('error', () => {
+          if (!isFallback && !lockedIn && !switched && !closed) {
+            evaluateHandoff(true);
+            return;
+          }
+          if (proc === child) cleanupAll();
+        });
+
+        child.on('close', () => {
+          if (!isFallback && !lockedIn && !switched && !closed) {
+            evaluateHandoff(true);
+            return;
+          }
+          if (proc === child) {
+            cleanupAll();
+            try { res.end(); } catch (_) {}
+          }
+        });
+
+        return child;
+      };
+
+      const onInitialData = (chunk) => {
+        if (closed || lockedIn || switched) return;
+        initialChunks.push(chunk);
+        if (proc && proc.stdin.writable) {
+          proc.stdin.write(chunk);
+        }
+      };
+
+      const p1 = startFfmpegProc(initialTranscodeVideo, initialDisableAudio, initialTranscodeVideo && initialDisableAudio);
+      if (initialTranscodeVideo && initialDisableAudio && p1) {
+        lockedIn = true;
+        uRes.pipe(p1.stdin);
+      } else {
+        uRes.on('data', onInitialData);
+      }
+
+      uRes.on('end', () => {
+        if (proc && proc.stdin.writable) {
+          try { proc.stdin.end(); } catch (_) {}
+        }
+      });
     });
     return;
   }
@@ -1778,7 +1902,7 @@ app.get('/api/media/stream', (req, res) => {
     '-analyzeduration', '200000',
     '-ss', String(startSec),
     '-i', targetUrl,
-    ...buildOutputArgs()
+    ...buildOutputArgs(initialTranscodeVideo, initialDisableAudio)
   ];
 
   res.writeHead(200, {
@@ -1793,11 +1917,25 @@ app.get('/api/media/stream', (req, res) => {
   if (res.socket) res.socket.setNoDelay(true);
 
   proc = spawn(ffmpegPath, seekArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-  attachStderrTrackCapture(proc);
   proc.stdout.pipe(res);
 
+  let seekStderr = '';
+  let seekParsed = false;
+  proc.stderr.on('data', (chunk) => {
+    if (seekParsed) return;
+    seekStderr += chunk.toString();
+    if (seekStderr.includes('Output #0') || seekStderr.includes('Stream mapping:') || seekStderr.length > 16384) {
+      seekParsed = true;
+      const parsedInfo = parseFfmpegStderrTracks(seekStderr);
+      if (parsedInfo.ok) mediaTracksCache.set(targetUrl, parsedInfo);
+    }
+  });
+
   proc.on('error', cleanupAll);
-  proc.on('close', cleanupAll);
+  proc.on('close', () => {
+    cleanupAll();
+    try { res.end(); } catch (_) {}
+  });
 });
 
 // Bloquear panel legado inseguro en public/
